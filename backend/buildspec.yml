@@ -80,6 +80,24 @@ phases:
           echo "   - CloudWatch Logs: https://console.aws.amazon.com/cloudwatch/home"
           echo "   - Neptune: https://console.aws.amazon.com/neptune/home"
           echo ""
+          
+          # Auto-start pipeline after deployment
+          echo "========================================="
+          echo "Auto-Starting Pipeline"
+          echo "========================================="
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn $STATE_MACHINE_ARN \
+            --input '{"start_date":"1-08-01","end_date":"1815-08-31","max_pages":10}' \
+            --region $AWS_DEFAULT_REGION \
+            --query 'executionArn' \
+            --output text)
+          
+          echo "✅ Pipeline execution started!"
+          echo "Execution ARN: $EXECUTION_ARN"
+          echo ""
+          echo "Monitor progress:"
+          echo "  aws stepfunctions describe-execution --execution-arn $EXECUTION_ARN"
+          echo ""
         fi
 
   post_build:
@@ -98,5 +116,5 @@ phases:
 
 artifacts:
   files:
-    - '**/*'
-  base-directory: 'backend/cdk.out'
+    - "**/*"
+  base-directory: "backend/cdk.out"

@@ -8,6 +8,7 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as stepfunctions from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -210,7 +211,74 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // 2. Data Extractor Lambda
+    // 2. Image to PDF Lambda
+    const imageToPdfLogGroup = new logs.LogGroup(this, "ImageToPdfLogGroup", {
+      logGroupName: `/aws/lambda/${projectName}-image-to-pdf`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const imageToPdfFunction = new lambda.DockerImageFunction(
+      this,
+      "ImageToPdfFunction",
+      {
+        functionName: `${projectName}-image-to-pdf`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/image-to-pdf")
+        ),
+        timeout: cdk.Duration.minutes(15),
+        memorySize: 3008,
+        role: lambdaRole,
+        environment: {
+          DATA_BUCKET: dataBucket.bucketName,
+        },
+        logGroup: imageToPdfLogGroup,
+      }
+    );
+
+    // 3. Bedrock Data Automation Lambda
+    const bedrockDataAutomationLogGroup = new logs.LogGroup(
+      this,
+      "BedrockDataAutomationLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-bedrock-data-automation`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const bedrockDataAutomationFunction = new lambda.DockerImageFunction(
+      this,
+      "BedrockDataAutomationFunction",
+      {
+        functionName: `${projectName}-bedrock-data-automation`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/bedrock-data-automation")
+        ),
+        timeout: cdk.Duration.minutes(15),
+        memorySize: 2048,
+        role: lambdaRole,
+        environment: {
+          DATA_BUCKET: dataBucket.bucketName,
+          AWS_ACCOUNT_ID: this.account,
+        },
+        logGroup: bedrockDataAutomationLogGroup,
+      }
+    );
+
+    // Grant Bedrock Data Automation permissions
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-data-automation:*",
+          "bedrock-data-automation-runtime:*",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // 4. Data Extractor Lambda (kept for compatibility)
     const dataExtractorLogGroup = new logs.LogGroup(
       this,
       "DataExtractorLogGroup",
@@ -344,10 +412,19 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       outputPath: "$.Payload",
     });
 
-    const extractDataTask = new tasks.LambdaInvoke(this, "ExtractData", {
-      lambdaFunction: dataExtractorFunction,
+    const imageToPdfTask = new tasks.LambdaInvoke(this, "ImageToPdf", {
+      lambdaFunction: imageToPdfFunction,
       outputPath: "$.Payload",
     });
+
+    const bedrockDataAutomationTask = new tasks.LambdaInvoke(
+      this,
+      "BedrockDataAutomation",
+      {
+        lambdaFunction: bedrockDataAutomationFunction,
+        outputPath: "$.Payload",
+      }
+    );
 
     const extractEntitiesTask = new tasks.LambdaInvoke(
       this,
@@ -363,9 +440,10 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       outputPath: "$.Payload",
     });
 
-    // Define workflow
+    // Define workflow: Images → PDF → Bedrock Data Automation → Entities → Neptune
     const definition = collectImagesTask
-      .next(extractDataTask)
+      .next(imageToPdfTask)
+      .next(bedrockDataAutomationTask)
       .next(extractEntitiesTask)
       .next(loadToNeptuneTask);
 
@@ -440,5 +518,33 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       value: `${api.url}chat`,
       description: "Chat endpoint URL",
     });
+
+    // ========================================
+    // Auto-Start Pipeline After Deployment (Optional)
+    // ========================================
+    // Uncomment to automatically trigger pipeline after each deployment
+    /*
+    const autoStartPipeline = new cr.AwsCustomResource(this, 'AutoStartPipeline', {
+      onCreate: {
+        service: 'StepFunctions',
+        action: 'startExecution',
+        parameters: {
+          stateMachineArn: stateMachine.stateMachineArn,
+          input: JSON.stringify({
+            start_date: '1815-08-01',
+            end_date: '1815-08-31',
+            max_pages: 10
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['states:StartExecution'],
+          resources: [stateMachine.stateMachineArn],
+        }),
+      ]),
+    });
+    */
   }
 }
