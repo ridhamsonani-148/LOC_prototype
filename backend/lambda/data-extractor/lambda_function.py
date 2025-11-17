@@ -1,6 +1,7 @@
 """
 Data Extractor Lambda Function
-Extracts structured data from newspaper images using AWS Bedrock
+Extracts structured data from newspaper images using Claude Vision
+Uses NEW LOC.gov API IIIF image URLs
 """
 
 import json
@@ -17,6 +18,10 @@ bedrock_runtime = boto3.client('bedrock-runtime')
 
 DATA_BUCKET = os.environ['DATA_BUCKET']
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+
+# Claude Vision limits
+MAX_IMAGE_SIZE_MB = 5
+MAX_IMAGE_DIMENSION = 8000
 
 def lambda_handler(event, context):
     """
@@ -93,10 +98,14 @@ def lambda_handler(event, context):
     }
 
 
-def download_image(image_url: str, max_size: tuple = (2048, 2048)) -> bytes:
-    """Download and prepare image for Bedrock"""
+def download_image(image_url: str, max_size: tuple = (3000, 3000)) -> bytes:
+    """
+    Download and prepare IIIF image for Claude Vision
+    Handles NEW LOC.gov API IIIF URLs
+    """
     try:
-        response = requests.get(image_url, timeout=30)
+        print(f"Downloading image from {image_url}")
+        response = requests.get(image_url, timeout=60)
         response.raise_for_status()
         
         # Open and resize image
