@@ -7,7 +7,7 @@ phases:
       python: 3.11
     commands:
       - echo "Installing AWS CDK CLI..."
-      - npm install -g aws-cdk@2.161.1
+      - npm install -g aws-cdk@latest
       - cd backend
       - npm install
 

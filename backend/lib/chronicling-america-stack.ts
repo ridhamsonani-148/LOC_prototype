@@ -144,6 +144,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
 
     // 1. Image Collector Lambda
+    const imageCollectorLogGroup = new logs.LogGroup(this, 'ImageCollectorLogGroup', {
+      logGroupName: `/aws/lambda/${projectName}-image-collector`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const imageCollectorFunction = new lambda.DockerImageFunction(this, 'ImageCollectorFunction', {
       functionName: `${projectName}-image-collector`,
       code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../lambda/image-collector')),
@@ -153,10 +159,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       environment: {
         DATA_BUCKET: dataBucket.bucketName,
       },
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: imageCollectorLogGroup,
     });
 
     // 2. Data Extractor Lambda
+    const dataExtractorLogGroup = new logs.LogGroup(this, 'DataExtractorLogGroup', {
+      logGroupName: `/aws/lambda/${projectName}-data-extractor`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const dataExtractorFunction = new lambda.DockerImageFunction(this, 'DataExtractorFunction', {
       functionName: `${projectName}-data-extractor`,
       code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../lambda/data-extractor')),
@@ -167,10 +179,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         DATA_BUCKET: dataBucket.bucketName,
         BEDROCK_MODEL_ID: bedrockModelId,
       },
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: dataExtractorLogGroup,
     });
 
     // 3. Entity Extractor Lambda
+    const entityExtractorLogGroup = new logs.LogGroup(this, 'EntityExtractorLogGroup', {
+      logGroupName: `/aws/lambda/${projectName}-entity-extractor`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const entityExtractorFunction = new lambda.DockerImageFunction(this, 'EntityExtractorFunction', {
       functionName: `${projectName}-entity-extractor`,
       code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../lambda/entity-extractor')),
@@ -181,10 +199,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         DATA_BUCKET: dataBucket.bucketName,
         BEDROCK_MODEL_ID: bedrockModelId,
       },
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: entityExtractorLogGroup,
     });
 
     // 4. Neptune Loader Lambda
+    const neptuneLoaderLogGroup = new logs.LogGroup(this, 'NeptuneLoaderLogGroup', {
+      logGroupName: `/aws/lambda/${projectName}-neptune-loader`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const neptuneLoaderFunction = new lambda.DockerImageFunction(this, 'NeptuneLoaderFunction', {
       functionName: `${projectName}-neptune-loader`,
       code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../lambda/neptune-loader')),
@@ -199,10 +223,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
         NEPTUNE_PORT: '8182',
       },
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: neptuneLoaderLogGroup,
     });
 
     // 5. Chat Handler Lambda
+    const chatHandlerLogGroup = new logs.LogGroup(this, 'ChatHandlerLogGroup', {
+      logGroupName: `/aws/lambda/${projectName}-chat-handler`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const chatHandlerFunction = new lambda.DockerImageFunction(this, 'ChatHandlerFunction', {
       functionName: `${projectName}-chat-handler`,
       code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../lambda/chat-handler')),
@@ -217,7 +247,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         NEPTUNE_PORT: '8182',
         BEDROCK_MODEL_ID: bedrockModelId,
       },
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: chatHandlerLogGroup,
     });
 
     // ========================================
@@ -253,7 +283,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     const stateMachine = new stepfunctions.StateMachine(this, 'PipelineStateMachine', {
       stateMachineName: `${projectName}-pipeline`,
-      definition,
+      definitionBody: stepfunctions.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.hours(2),
       logs: {
         destination: new logs.LogGroup(this, 'StateMachineLogGroup', {
