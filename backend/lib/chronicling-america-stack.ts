@@ -127,7 +127,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         'bedrock:InvokeModel',
         'bedrock:InvokeModelWithResponseStream',
       ],
-      resources: [`arn:aws:bedrock:${this.region}::foundation-model/*`],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/*`,
+        `arn:aws:bedrock:*::foundation-model/*`,
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+        `arn:aws:bedrock:*:${this.account}:inference-profile/*`,
+      ],
     }));
 
     // Grant Neptune permissions
