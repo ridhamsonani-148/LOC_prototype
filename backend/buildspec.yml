@@ -1,0 +1,102 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+      python: 3.11
+    commands:
+      - echo "Installing AWS CDK CLI..."
+      - npm install -g aws-cdk@2.161.1
+      - cd backend
+      - npm install
+
+  pre_build:
+    commands:
+      - echo "Building TypeScript..."
+      - npm run build
+      - echo "Bootstrapping CDK..."
+      - cdk bootstrap --require-approval never
+
+  build:
+    commands:
+      - |
+        if [ "$ACTION" = "destroy" ]; then
+          echo "Destroying stack..."
+          cdk destroy ChroniclingAmericaStack --force \
+            --context projectName="$PROJECT_NAME" \
+            --context dataBucketName="$DATA_BUCKET_NAME" \
+            --context bedrockModelId="$BEDROCK_MODEL_ID"
+        else
+          echo "========================================="
+          echo "Deploying Chronicling America Pipeline"
+          echo "========================================="
+          
+          echo "Deploying CDK stack..."
+          cdk deploy ChroniclingAmericaStack --require-approval never \
+            --context projectName="$PROJECT_NAME" \
+            --context dataBucketName="$DATA_BUCKET_NAME" \
+            --context bedrockModelId="$BEDROCK_MODEL_ID" \
+            --outputs-file outputs.json
+          
+          echo "Extracting outputs..."
+          DATA_BUCKET=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.DataBucketName // empty')
+          STATE_MACHINE_ARN=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.StateMachineArn // empty')
+          NEPTUNE_ENDPOINT=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.NeptuneEndpoint // empty')
+          API_URL=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.APIGatewayURL // empty')
+          CHAT_ENDPOINT=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.ChatEndpoint // empty')
+          
+          if [ -z "$DATA_BUCKET" ] || [ -z "$STATE_MACHINE_ARN" ]; then
+            echo "❌ ERROR: Could not extract required outputs from CDK deployment"
+            exit 1
+          fi
+          
+          echo "✅ Deployment successful!"
+          echo ""
+          echo "========================================="
+          echo "Deployment Summary"
+          echo "========================================="
+          echo "Data Bucket: $DATA_BUCKET"
+          echo "State Machine ARN: $STATE_MACHINE_ARN"
+          echo "Neptune Endpoint: $NEPTUNE_ENDPOINT"
+          echo "API Gateway URL: $API_URL"
+          echo "Chat Endpoint: $CHAT_ENDPOINT"
+          echo ""
+          echo "========================================="
+          echo "Next Steps"
+          echo "========================================="
+          echo "1. Start pipeline execution:"
+          echo "   aws stepfunctions start-execution \\"
+          echo "     --state-machine-arn $STATE_MACHINE_ARN \\"
+          echo "     --input '{\"start_date\":\"1815-08-01\",\"end_date\":\"1815-08-31\",\"max_pages\":10}'"
+          echo ""
+          echo "2. Test chat API:"
+          echo "   curl -X POST $CHAT_ENDPOINT \\"
+          echo "     -H 'Content-Type: application/json' \\"
+          echo "     -d '{\"question\":\"Who are the people mentioned?\"}'"
+          echo ""
+          echo "3. Monitor execution:"
+          echo "   - Step Functions: https://console.aws.amazon.com/states/home"
+          echo "   - CloudWatch Logs: https://console.aws.amazon.com/cloudwatch/home"
+          echo "   - Neptune: https://console.aws.amazon.com/neptune/home"
+          echo ""
+        fi
+
+  post_build:
+    commands:
+      - echo "========================================="
+      - echo "Deployment Complete"
+      - echo "========================================="
+      - |
+        if [ "$ACTION" = "deploy" ]; then
+          echo "✅ Pipeline deployed successfully"
+          echo "📊 Check CloudWatch Logs for Lambda execution details"
+          echo "🔍 Query Neptune via the chat API endpoint"
+        else
+          echo "✅ Stack destroyed successfully"
+        fi
+
+artifacts:
+  files:
+    - '**/*'
+  base-directory: 'backend/cdk.out'
