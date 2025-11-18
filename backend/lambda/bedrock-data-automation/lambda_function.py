@@ -1,6 +1,7 @@
 """
-Bedrock Data Automation Lambda
-Processes PDF using Bedrock Data Automation for entity and relationship extraction
+Amazon Bedrock Data Automation Lambda
+Extracts structured data from newspaper PDFs using Bedrock Data Automation
+Includes entity extraction, relationship analysis, and content understanding
 """
 
 import json
@@ -8,15 +9,18 @@ import os
 import boto3
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
+# Initialize AWS clients
 s3_client = boto3.client('s3')
-bedrock_da = boto3.client('bedrock')
-bedrock_da_runtime = boto3.client('bedrock-runtime')
+bedrock_da = boto3.client('bedrock-agent')
+bedrock_da_runtime = boto3.client('bedrock-agent-runtime')
 
+# Environment variables
 DATA_BUCKET = os.environ['DATA_BUCKET']
-AWS_REGION = os.environ.get('AWS_REGION')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 AWS_ACCOUNT_ID = os.environ.get('AWS_ACCOUNT_ID')
+PROJECT_NAME = os.environ.get('DATA_AUTOMATION_PROJECT_NAME', 'chronicling-america-extraction')
 
 def lambda_handler(event, context):
     """
@@ -66,32 +70,93 @@ def lambda_handler(event, context):
     
     # Step 4: Download and parse results
     extracted_data = None
+    entity_data = None
+    extracted_key = None
+    
     if result['status'] == 'Success':
         try:
             extracted_data = download_results(output_s3_uri)
+            
+            # Extract entities and relationships
+            entity_data = extract_entities_and_relationships(extracted_data)
+            
         except Exception as e:
-            print(f"Warning: Could not download results: {e}")
+            print(f"Warning: Could not download/process results: {e}")
     
     # Step 5: Save extracted data to S3
     if extracted_data:
         extracted_key = f"extracted/{timestamp}_bedrock_da.json"
+        
+        # Prepare comprehensive output
+        output_data = {
+            'document_id': f"bedrock_da_{timestamp}",
+            'source_pdf': pdf_key,
+            'invocation_arn': invocation_arn,
+            'status': result['status'],
+            'output_s3_uri': output_s3_uri,
+            'processed_at': datetime.utcnow().isoformat(),
+            'processing_time_ms': result.get('processingTimeMillis', 0),
+            'entity_summary': entity_data,
+            'raw_data': extracted_data,
+            'metadata': {
+                'bucket': bucket,
+                'pdf_s3_uri': pdf_s3_uri,
+                'project_arn': project_arn,
+                'region': AWS_REGION
+            }
+        }
+        
         s3_client.put_object(
             Bucket=bucket,
             Key=extracted_key,
-            Body=json.dumps(extracted_data, indent=2),
+            Body=json.dumps(output_data, indent=2),
             ContentType='application/json'
         )
         print(f"✓ Saved extracted data to s3://{bucket}/{extracted_key}")
     
-    return {
+    # Prepare response
+    response = {
         'statusCode': 200,
         'invocation_arn': invocation_arn,
         'status': result['status'],
         'output_s3_uri': output_s3_uri,
-        'extracted_key': extracted_key if extracted_data else None,
+        'extracted_key': extracted_key,
         'bucket': bucket,
-        'pdf_key': pdf_key
+        'pdf_key': pdf_key,
+        'timestamp': timestamp
     }
+    
+    # Add entity summary if available
+    if entity_data:
+        response['entity_count'] = entity_data.get('entity_count', 0)
+        response['relationship_count'] = entity_data.get('relationship_count', 0)
+    
+    print(f"\n{'='*60}")
+    print(f"EXTRACTION COMPLETE")
+    print(f"{'='*60}")
+    print(f"Status: {result['status']}")
+    print(f"Output: s3://{bucket}/{extracted_key}")
+    if entity_data:
+        print(f"Entities: {entity_data.get('entity_count', 0)}")
+        print(f"Relationships: {entity_data.get('relationship_count', 0)}")
+    print(f"{'='*60}")
+    
+    return response
+
+
+def list_existing_projects() -> List[Dict[str, Any]]:
+    """
+    List all existing Data Automation projects
+    
+    Returns:
+        List of project information
+    """
+    try:
+        response = bedrock_da.list_data_automation_projects()
+        return response.get('projects', [])
+    except Exception as e:
+        print(f"Error listing projects: {e}")
+        return []
 
 
 def ensure_data_automation_project() -> str:
@@ -101,24 +166,24 @@ def ensure_data_automation_project() -> str:
     Returns:
         Project ARN
     """
-    project_name = "chronicling-america-extraction"
+    print(f"Checking for Data Automation project: {PROJECT_NAME}")
     
     try:
         # Try to list existing projects
-        response = bedrock_da.list_data_automation_projects()
+        projects = list_existing_projects()
         
         # Check if our project exists
-        for project in response.get('projects', []):
-            if project['projectName'] == project_name:
-                project_arn = project['projectArn']
+        for project in projects:
+            if project.get('projectName') == PROJECT_NAME:
+                project_arn = project.get('projectArn')
                 print(f"✓ Using existing project: {project_arn}")
                 return project_arn
         
         # Project doesn't exist, create it
-        print(f"Creating new Data Automation project: {project_name}")
+        print(f"Creating new Data Automation project: {PROJECT_NAME}")
         
         response = bedrock_da.create_data_automation_project(
-            projectName=project_name,
+            projectName=PROJECT_NAME,
             projectDescription="Historical newspaper data extraction with entity and relationship analysis",
             projectStage='DEVELOPMENT',
             standardOutputConfiguration={
@@ -148,14 +213,74 @@ def ensure_data_automation_project() -> str:
         
         project_arn = response['projectArn']
         print(f"✓ Created new project: {project_arn}")
+        print(f"  Status: {response.get('status', 'Unknown')}")
         
         # Wait for project to be ready
+        print("  Waiting for project initialization...")
         time.sleep(5)
         
         return project_arn
         
     except Exception as e:
-        print(f"Error with Data Automation project: {e}")
+        print(f"✗ Error with Data Automation project: {e}")
+        print(f"  Error type: {type(e).__name__}")
+        raise
+
+
+def create_custom_blueprint(
+    blueprint_name: str,
+    entity_types: List[str],
+    relationship_types: List[str]
+) -> str:
+    """
+    Create a custom blueprint for entity and relationship extraction
+    
+    Args:
+        blueprint_name: Name for the blueprint
+        entity_types: List of entity types to extract
+        relationship_types: List of relationship types to identify
+    
+    Returns:
+        Blueprint ARN
+    """
+    print(f"Creating custom blueprint: {blueprint_name}")
+    
+    # Define schema for newspaper entity extraction
+    schema = {
+        "version": "1.0",
+        "entities": [
+            {
+                "name": entity_type,
+                "description": f"Extract {entity_type} entities from historical newspapers"
+            }
+            for entity_type in entity_types
+        ],
+        "relationships": [
+            {
+                "name": rel_type,
+                "description": f"{rel_type} relationship between entities"
+            }
+            for rel_type in relationship_types
+        ]
+    }
+    
+    try:
+        response = bedrock_da.create_blueprint(
+            blueprintName=blueprint_name,
+            type='DOCUMENT',
+            blueprintStage='DEVELOPMENT',
+            schema=json.dumps(schema)
+        )
+        
+        blueprint_arn = response['blueprint']['blueprintArn']
+        print(f"✓ Created Blueprint ARN: {blueprint_arn}")
+        print(f"  Entity Types: {len(entity_types)}")
+        print(f"  Relationship Types: {len(relationship_types)}")
+        
+        return blueprint_arn
+        
+    except Exception as e:
+        print(f"✗ Error creating blueprint: {e}")
         raise
 
 
@@ -167,6 +292,11 @@ def invoke_data_automation(
     """
     Invoke Bedrock Data Automation
     
+    Args:
+        input_s3_uri: S3 URI of input PDF
+        output_s3_uri: S3 URI for output
+        project_arn: Data Automation Project ARN
+    
     Returns:
         Invocation ARN
     """
@@ -176,6 +306,18 @@ def invoke_data_automation(
     print(f"  Project: {project_arn}")
     
     try:
+        # Verify input file exists
+        input_parts = input_s3_uri.replace('s3://', '').split('/', 1)
+        input_bucket = input_parts[0]
+        input_key = input_parts[1] if len(input_parts) > 1 else ''
+        
+        try:
+            s3_client.head_object(Bucket=input_bucket, Key=input_key)
+            print(f"  ✓ Input file verified")
+        except Exception as e:
+            raise Exception(f"Input file not found: {input_s3_uri} - {e}")
+        
+        # Invoke Data Automation
         response = bedrock_da_runtime.invoke_data_automation_async(
             inputConfiguration={
                 's3Uri': input_s3_uri
@@ -195,7 +337,28 @@ def invoke_data_automation(
         return invocation_arn
         
     except Exception as e:
-        print(f"Error invoking Data Automation: {e}")
+        print(f"✗ Error invoking Data Automation: {e}")
+        print(f"  Error type: {type(e).__name__}")
+        raise
+
+
+def get_invocation_status(invocation_arn: str) -> Dict[str, Any]:
+    """
+    Get status of a Data Automation invocation
+    
+    Args:
+        invocation_arn: Invocation ARN
+    
+    Returns:
+        Status information
+    """
+    try:
+        response = bedrock_da_runtime.get_data_automation_status(
+            invocationArn=invocation_arn
+        )
+        return response
+    except Exception as e:
+        print(f"✗ Error getting status: {e}")
         raise
 
 
@@ -203,38 +366,46 @@ def wait_for_completion(invocation_arn: str, max_wait: int = 600) -> Dict[str, A
     """
     Wait for Data Automation to complete
     
+    Args:
+        invocation_arn: Invocation ARN
+        max_wait: Maximum seconds to wait
+    
     Returns:
-        Status response
+        Final status response
     """
     print(f"Waiting for completion (max {max_wait}s)...")
     
     elapsed = 0
     interval = 10
+    last_status = None
     
     while elapsed < max_wait:
         try:
-            response = bedrock_da_runtime.get_data_automation_status(
-                invocationArn=invocation_arn
-            )
-            
+            response = get_invocation_status(invocation_arn)
             status = response['status']
             
+            # Only print if status changed
+            if status != last_status:
+                print(f"  Status: {status} ({elapsed}s elapsed)")
+                last_status = status
+            
             if status == 'Success':
-                print(f"✓ Processing completed in {elapsed}s")
+                processing_time = response.get('processingTimeMillis', 0)
+                print(f"✓ Processing completed in {elapsed}s (actual: {processing_time}ms)")
                 return response
             elif status == 'Failed':
                 error_msg = response.get('errorMessage', 'Unknown error')
+                print(f"✗ Processing failed: {error_msg}")
                 raise Exception(f"Processing failed: {error_msg}")
             
             # Still processing
-            print(f"  Status: {status} ({elapsed}s elapsed)")
             time.sleep(interval)
             elapsed += interval
             
         except Exception as e:
-            if 'Failed' in str(e):
+            if 'Failed' in str(e) or 'failed' in str(e):
                 raise
-            print(f"  Error checking status: {e}")
+            print(f"  Warning: Error checking status: {e}")
             time.sleep(interval)
             elapsed += interval
     
@@ -245,21 +416,33 @@ def download_results(output_s3_uri: str) -> Dict[str, Any]:
     """
     Download and parse results from S3
     
+    Args:
+        output_s3_uri: S3 URI of output directory
+    
     Returns:
-        Parsed result data
+        Parsed result data with all output files
     """
     print(f"Downloading results from {output_s3_uri}...")
     
     # Parse S3 URI
+    if not output_s3_uri.startswith('s3://'):
+        raise ValueError(f"Invalid S3 URI: {output_s3_uri}")
+    
     uri_parts = output_s3_uri.replace('s3://', '').split('/', 1)
     bucket = uri_parts[0]
     prefix = uri_parts[1] if len(uri_parts) > 1 else ''
     
-    # List objects
+    # Remove trailing slash for listing
+    if prefix.endswith('/'):
+        prefix = prefix[:-1]
+    
+    # List objects in output prefix
     response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
     
     if 'Contents' not in response:
         raise Exception(f"No output files found at {output_s3_uri}")
+    
+    print(f"  Found {len(response['Contents'])} output files")
     
     # Find JSON result files
     result_files = [obj for obj in response['Contents'] if obj['Key'].endswith('.json')]
@@ -267,13 +450,75 @@ def download_results(output_s3_uri: str) -> Dict[str, Any]:
     if not result_files:
         raise Exception(f"No JSON result files found at {output_s3_uri}")
     
-    # Download first result file
-    result_key = result_files[0]['Key']
-    print(f"  Downloading: {result_key}")
+    # Download all JSON result files
+    results = {}
+    for result_file in result_files:
+        result_key = result_file['Key']
+        filename = result_key.split('/')[-1]
+        
+        print(f"  Downloading: {filename}")
+        
+        try:
+            result_obj = s3_client.get_object(Bucket=bucket, Key=result_key)
+            result_data = json.loads(result_obj['Body'].read())
+            results[filename] = result_data
+        except Exception as e:
+            print(f"  Warning: Could not parse {filename}: {e}")
     
-    result_obj = s3_client.get_object(Bucket=bucket, Key=result_key)
-    result_data = json.loads(result_obj['Body'].read())
+    print(f"✓ Downloaded and parsed {len(results)} result files")
     
-    print(f"✓ Downloaded and parsed results")
+    # Return the main result or all results
+    if len(results) == 1:
+        return list(results.values())[0]
+    else:
+        return results
+
+
+def extract_entities_and_relationships(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract entities and relationships from Data Automation output
     
-    return result_data
+    Args:
+        extracted_data: Raw output from Data Automation
+    
+    Returns:
+        Structured entities and relationships
+    """
+    print("Extracting entities and relationships...")
+    
+    entities = []
+    relationships = []
+    
+    try:
+        # Parse document structure
+        document = extracted_data.get('document', {})
+        pages = document.get('pages', [])
+        
+        print(f"  Processing {len(pages)} pages")
+        
+        # Extract entities from pages
+        for page in pages:
+            page_entities = page.get('entities', [])
+            entities.extend(page_entities)
+        
+        # Extract relationships
+        doc_relationships = document.get('relationships', [])
+        relationships.extend(doc_relationships)
+        
+        print(f"✓ Extracted {len(entities)} entities and {len(relationships)} relationships")
+        
+        return {
+            'entities': entities,
+            'relationships': relationships,
+            'entity_count': len(entities),
+            'relationship_count': len(relationships)
+        }
+        
+    except Exception as e:
+        print(f"Warning: Could not extract entities/relationships: {e}")
+        return {
+            'entities': [],
+            'relationships': [],
+            'entity_count': 0,
+            'relationship_count': 0
+        }
