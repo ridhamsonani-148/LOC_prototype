@@ -276,11 +276,21 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:GetDataAutomationProject",
           "bedrock:UpdateDataAutomationProject",
           "bedrock:DeleteDataAutomationProject",
-          "bedrock:InvokeDataAutomationAsync",
-          "bedrock:GetDataAutomationStatus",
           "bedrock:CreateBlueprint",
           "bedrock:GetBlueprint",
           "bedrock:ListBlueprints",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant Bedrock Data Automation Runtime permissions
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-data-automation-runtime:InvokeDataAutomationAsync",
+          "bedrock-data-automation-runtime:GetDataAutomationStatus",
         ],
         resources: ["*"],
       })
