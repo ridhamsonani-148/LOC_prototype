@@ -263,10 +263,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           AWS_ACCOUNT_ID: this.account,
           BEDROCK_REGION: this.region,
           LOG_LEVEL: "INFO",
-          // Optional: Set to use existing project instead of auto-creating
-          // BEDROCK_PROJECT_ARN: "arn:aws:bedrock:us-east-1:541064517181:data-automation-project/399b803ec8ad",
-          // Or use a different project name to avoid conflicts
-          // BEDROCK_PROJECT_NAME: "chronicling-america-extraction-v2",
+          // Using a different project name to avoid ghost project conflict
+          BEDROCK_PROJECT_NAME: "chronicling-america-pipeline",
         },
         logGroup: bedrockDataAutomationLogGroup,
       }
