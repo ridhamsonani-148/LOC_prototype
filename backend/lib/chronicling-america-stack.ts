@@ -263,8 +263,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           AWS_ACCOUNT_ID: this.account,
           BEDROCK_REGION: this.region,
           LOG_LEVEL: "INFO",
-          // Using a different project name to avoid ghost project conflict
-          BEDROCK_PROJECT_NAME: "chronicling-america-pipeline",
+          BEDROCK_PROJECT_NAME: `${projectName}-extraction`,
+          BEDROCK_PROFILE_ARN: `arn:aws:bedrock:${this.region}:${this.account}:data-automation-profile/us.data-automation-v1`,
         },
         logGroup: bedrockDataAutomationLogGroup,
       }
@@ -283,6 +283,11 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:CreateBlueprint",
           "bedrock:GetBlueprint",
           "bedrock:ListBlueprints",
+          "bedrock:CreateDataAutomationProfile",
+          "bedrock:GetDataAutomationProfile",
+          "bedrock:ListDataAutomationProfiles",
+          "bedrock:UpdateDataAutomationProfile",
+          "bedrock:DeleteDataAutomationProfile",
         ],
         resources: ["*"],
       })
@@ -300,8 +305,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
-    // Grant permission to use AWS-managed Bedrock Data Automation Profiles
-    // These profiles are owned by AWS (account 803633136603) and require explicit permission
+    // Grant permission to use Bedrock Data Automation Profiles and Projects
     lambdaRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -311,10 +315,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:GetDataAutomationProfile",
           "bedrock:ListDataAutomationProfiles",
         ],
-        resources: [
-          // Own account's projects
-          `arn:aws:bedrock:${this.region}:${this.account}:data-automation-project/*`,
-        ],
+        resources: ["*"],
       })
     );
 
