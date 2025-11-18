@@ -312,9 +312,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:ListDataAutomationProfiles",
         ],
         resources: [
-          // AWS-managed profiles (cross-account)
-          `arn:aws:bedrock:${this.region}:803633136603:data-automation-profile/*`,
-          `arn:aws:bedrock:*:803633136603:data-automation-profile/*`,
           // Own account's projects
           `arn:aws:bedrock:${this.region}:${this.account}:data-automation-project/*`,
         ],
