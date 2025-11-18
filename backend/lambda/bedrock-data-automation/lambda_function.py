@@ -39,7 +39,7 @@ class BedrockDataAutomationClient:
         self.region = region
         self.profile_arn = profile_arn
         self.project_arn = project_arn
-        self.project_name = project_name or "chronicling-america-extraction"
+        self.project_name = project_name or "chronicling-america-extraction-1"
         self.runtime = boto3.client('bedrock-data-automation-runtime', region_name=region)
         self.bedrock_da = boto3.client('bedrock-data-automation', region_name=region)
         
@@ -59,8 +59,14 @@ class BedrockDataAutomationClient:
         
         logger.info(f"Checking if project '{self.project_name}' exists in region {self.region}...")
         
-        # First, list all existing projects
+        # First, try to get the project directly by constructing its ARN
+        # This works even if the project doesn't show up in list
         try:
+            # Construct potential ARN - we'll try to get it directly
+            # Format: arn:aws:bedrock:region:account:data-automation-project/project-id
+            # We don't know the project-id, so we'll try listing first
+            
+            logger.info("Attempting to list all projects...")
             next_token = None
             all_projects = []
             while True:
@@ -134,28 +140,49 @@ class BedrockDataAutomationClient:
             
             logger.error(f"❌ Failed to create project: {error_code} - {error_msg}")
             
-            # If it's a ConflictException, the project might have just been created
+            # If it's a ConflictException, the project exists but is hidden (possibly DELETING state)
             if 'ConflictException' in error_code or 'already exists' in error_msg.lower():
-                logger.warning("ConflictException - project may have been created by another process, retrying list...")
+                logger.warning("ConflictException detected - project exists but not visible in list")
+                logger.warning("This usually means the project is in DELETING state or there's an API consistency issue")
                 
-                # Try listing one more time
-                try:
-                    response = self.bedrock_da.list_data_automation_projects()
-                    for project in response.get('projects', []):
-                        if project['projectName'] == self.project_name:
-                            self.project_arn = project['projectArn']
-                            logger.info(f"✅ Found project after conflict: {self.project_arn}")
-                            return self.project_arn
-                except Exception as list_error:
-                    logger.error(f"Failed to list projects after conflict: {list_error}")
+                # Wait a moment and try listing again with more retries
+                for attempt in range(3):
+                    logger.info(f"Retry attempt {attempt + 1}/3: Waiting 2 seconds and listing projects again...")
+                    time.sleep(2)
+                    
+                    try:
+                        response = self.bedrock_da.list_data_automation_projects()
+                        projects = response.get('projects', [])
+                        logger.info(f"Found {len(projects)} projects on retry {attempt + 1}")
+                        
+                        for project in projects:
+                            logger.info(f"  - {project['projectName']}: {project['projectArn']}")
+                            if project['projectName'] == self.project_name:
+                                self.project_arn = project['projectArn']
+                                logger.info(f"✅ Found project after retry: {self.project_arn}")
+                                return self.project_arn
+                    except Exception as list_error:
+                        logger.error(f"Retry {attempt + 1} failed: {list_error}")
+                
+                # Still not found - provide workaround
+                logger.error("Project exists but cannot be found after multiple retries")
+                logger.error("WORKAROUND: Use a different project name or manually delete the ghost project")
+                
+                raise RuntimeError(
+                    f"Ghost project detected: '{self.project_name}' exists but is not visible. "
+                    f"This typically happens when a project is stuck in DELETING state. "
+                    f"Solutions: "
+                    f"1) Wait 5-10 minutes and try again (deletion may complete), "
+                    f"2) Use a different project name (set BEDROCK_PROJECT_NAME env var), "
+                    f"3) Contact AWS support to remove the stuck project, "
+                    f"4) Use your existing 'loc' project by setting BEDROCK_PROJECT_ARN=arn:aws:bedrock:us-east-1:541064517181:data-automation-project/399b803ec8ad"
+                )
             
-            # Provide helpful error message
+            # Other error
             raise RuntimeError(
-                f"Failed to create or find project '{self.project_name}' in region {self.region}. "
+                f"Failed to create project '{self.project_name}' in region {self.region}. "
                 f"Error: {error_code} - {error_msg}. "
-                f"Suggestions: 1) Verify Bedrock Data Automation is available in {self.region}, "
-                f"2) Check IAM permissions for bedrock:CreateDataAutomationProject, "
-                f"3) Or set BEDROCK_PROJECT_ARN environment variable to use an existing project"
+                f"Check IAM permissions and Bedrock Data Automation availability."
             )
     
     def invoke_data_automation(self,
