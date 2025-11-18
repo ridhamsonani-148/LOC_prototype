@@ -300,6 +300,42 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
+    // Grant permission to use AWS-managed Bedrock Data Automation Profiles
+    // These profiles are owned by AWS (account 803633136603) and require explicit permission
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:InvokeDataAutomationAsync",
+          "bedrock:GetDataAutomationStatus",
+          "bedrock:GetDataAutomationProfile",
+          "bedrock:ListDataAutomationProfiles",
+        ],
+        resources: [
+          // AWS-managed profiles (cross-account)
+          `arn:aws:bedrock:${this.region}:803633136603:data-automation-profile/*`,
+          `arn:aws:bedrock:*:803633136603:data-automation-profile/*`,
+          // Own account's projects
+          `arn:aws:bedrock:${this.region}:${this.account}:data-automation-project/*`,
+        ],
+      })
+    );
+
+    // Grant Bedrock model invocation permissions (required by Data Automation)
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+        ],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/*`,
+          `arn:aws:bedrock:*::foundation-model/*`,
+        ],
+      })
+    );
+
     // 4. Data Extractor Lambda (kept for compatibility)
     const dataExtractorLogGroup = new logs.LogGroup(
       this,

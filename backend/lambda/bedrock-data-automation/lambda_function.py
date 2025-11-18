@@ -104,7 +104,7 @@ class BedrockDataAutomationClient:
             response = self.bedrock_da.create_data_automation_project(
                 projectName=self.project_name,
                 projectDescription="Historical newspaper data extraction with entity and relationship analysis",
-                projectStage='DEVELOPMENT',
+                projectStage='LIVE',
                 standardOutputConfiguration={
                     'document': {
                         'extraction': {
