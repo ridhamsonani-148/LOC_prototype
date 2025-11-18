@@ -35,10 +35,58 @@ def lambda_handler(event, context):
         s3_key = event.get('s3_key')
         bucket = event.get('bucket', DATA_BUCKET)
         
+        if not s3_key:
+            error_msg = f"Missing s3_key in event. Event keys: {list(event.keys())}"
+            print(f"ERROR: {error_msg}")
+            return {
+                'statusCode': 400,
+                'error': error_msg,
+                'event': event
+            }
+        
+        print(f"Reading extracted data from s3://{bucket}/{s3_key}")
         response = s3_client.get_object(Bucket=bucket, Key=s3_key)
-        results = json.loads(response['Body'].read().decode('utf-8'))
+        data = json.loads(response['Body'].read().decode('utf-8'))
+        
+        print(f"Data type: {type(data)}")
+        print(f"Data keys: {data.keys() if isinstance(data, dict) else 'not a dict'}")
+        
+        # Handle Bedrock Data Automation output format
+        # The result.json contains extracted content in various formats
+        if isinstance(data, dict):
+            # Check for common Bedrock Data Automation output structures
+            if 'content' in data:
+                # Extract text content
+                content = data['content']
+                if isinstance(content, str):
+                    results = [content]
+                elif isinstance(content, list):
+                    results = content
+                else:
+                    results = [data]
+            elif 'text' in data:
+                results = [data['text']]
+            elif 'pages' in data:
+                # Extract text from pages
+                results = []
+                for page in data.get('pages', []):
+                    if isinstance(page, dict) and 'text' in page:
+                        results.append(page['text'])
+                    elif isinstance(page, str):
+                        results.append(page)
+            else:
+                # Fallback: treat the whole dict as one result
+                results = [data]
+        elif isinstance(data, list):
+            results = data
+        else:
+            # If it's a string, treat it as the extracted text
+            results = [str(data)]
     
     print(f"Processing {len(results)} extraction results")
+    print(f"First result type: {type(results[0]) if results else 'empty'}")
+    if results:
+        print(f"First result sample: {str(results[0])[:200]}")
     
     # Extract entities from each result
     knowledge_graphs = []
@@ -46,17 +94,34 @@ def lambda_handler(event, context):
         print(f"Extracting entities from result {i+1}/{len(results)}")
         
         try:
-            # Build text from extraction
-            extraction = result.get('extraction', {})
-            text = build_text_from_extraction(extraction)
+            # Handle different data formats
+            if isinstance(result, str):
+                # If result is a string, it might be the text content directly
+                text = result
+                context = {'document_id': f'doc_{i}', 'source': 'bedrock_data_automation'}
+            elif isinstance(result, dict):
+                # Original format with extraction field
+                extraction = result.get('extraction', {})
+                text = build_text_from_extraction(extraction)
+                context = result
+            else:
+                print(f"Unexpected result type: {type(result)}")
+                continue
+            
+            # Skip empty text
+            if not text or len(text.strip()) < 10:
+                print(f"Skipping result {i+1}: text too short or empty")
+                continue
             
             # Extract entities and relationships
-            kg = extract_entities_and_relationships(text, result)
+            kg = extract_entities_and_relationships(text, context)
             
             knowledge_graphs.append(kg)
             
         except Exception as e:
             print(f"Error extracting entities from result {i+1}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # Save knowledge graphs to S3
