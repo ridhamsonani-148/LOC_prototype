@@ -87,7 +87,7 @@ phases:
           echo "========================================="
           EXECUTION_ARN=$(aws stepfunctions start-execution \
             --state-machine-arn $STATE_MACHINE_ARN \
-            --input '{"start_date":"1-08-01","end_date":"1815-08-31","max_pages":10}' \
+            --input '{"start_date":"1815-08-01","end_date":"1815-08-31","max_pages":10}' \
             --region $AWS_DEFAULT_REGION \
             --query 'executionArn' \
             --output text)

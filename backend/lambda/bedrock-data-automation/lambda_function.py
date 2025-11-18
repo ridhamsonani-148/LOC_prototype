@@ -35,11 +35,77 @@ class ProcessingResult:
 class BedrockDataAutomationClient:
     """Client for Bedrock Data Automation - Single Responsibility"""
     
-    def __init__(self, region: str, profile_arn: str, project_arn: str):
+    def __init__(self, region: str, profile_arn: str, project_arn: str = None, project_name: str = None):
         self.region = region
         self.profile_arn = profile_arn
         self.project_arn = project_arn
+        self.project_name = project_name or "chronicling-america-extraction"
         self.runtime = boto3.client('bedrock-data-automation-runtime', region_name=region)
+        self.bedrock_da = boto3.client('bedrock-data-automation', region_name=region)
+        
+        # Auto-create project if ARN not provided
+        if not self.project_arn:
+            logger.info("No project ARN provided, will create project on first use")
+    
+    def ensure_project_exists(self) -> str:
+        """
+        Ensure Data Automation project exists, create if needed
+        
+        Returns:
+            Project ARN
+        """
+        if self.project_arn:
+            return self.project_arn
+        
+        logger.info(f"Checking if project '{self.project_name}' exists...")
+        
+        try:
+            # Check if project exists
+            response = self.bedrock_da.list_data_automation_projects()
+            for project in response.get('projects', []):
+                if project['projectName'] == self.project_name:
+                    self.project_arn = project['projectArn']
+                    logger.info(f"Found existing project: {self.project_arn}")
+                    return self.project_arn
+            
+            # Create new project
+            logger.info(f"Creating new Data Automation project: {self.project_name}")
+            response = self.bedrock_da.create_data_automation_project(
+                projectName=self.project_name,
+                projectDescription="Historical newspaper data extraction with entity and relationship analysis",
+                projectStage='DEVELOPMENT',
+                standardOutputConfiguration={
+                    'document': {
+                        'extraction': {
+                            'granularity': {
+                                'types': ['DOCUMENT', 'PAGE', 'ELEMENT', 'WORD', 'LINE']
+                            },
+                            'boundingBox': {
+                                'state': 'ENABLED'
+                            }
+                        },
+                        'generativeField': {
+                            'state': 'ENABLED'
+                        },
+                        'outputFormat': {
+                            'textFormat': {
+                                'types': ['PLAIN_TEXT', 'MARKDOWN', 'HTML', 'CSV']
+                            },
+                            'additionalFileFormat': {
+                                'state': 'ENABLED'
+                            }
+                        }
+                    }
+                }
+            )
+            
+            self.project_arn = response['projectArn']
+            logger.info(f"Created project: {self.project_arn}")
+            return self.project_arn
+            
+        except Exception as e:
+            logger.error(f"Error ensuring project exists: {e}")
+            raise
     
     def invoke_data_automation(self,
                                input_s3_uri: str,
@@ -54,7 +120,11 @@ class BedrockDataAutomationClient:
         Returns:
             Invocation ARN
         """
+        # Ensure project exists before invoking
+        project_arn = self.ensure_project_exists()
+        
         logger.info(f"Invoking Data Automation for {input_s3_uri}")
+        logger.info(f"Using project: {project_arn}")
         
         response = self.runtime.invoke_data_automation_async(
             inputConfiguration={
@@ -64,7 +134,7 @@ class BedrockDataAutomationClient:
                 's3Uri': output_s3_uri
             },
             dataAutomationConfiguration={
-                'dataAutomationProjectArn': self.project_arn,
+                'dataAutomationProjectArn': project_arn,
                 'stage': 'LIVE'
             },
             dataAutomationProfileArn=self.profile_arn
@@ -259,16 +329,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'BEDROCK_PROFILE_ARN',
             f'arn:aws:bedrock:{region}:803633136603:data-automation-profile/us.data-automation-v1'
         )
-        project_arn = os.environ.get('BEDROCK_PROJECT_ARN')
+        project_arn = os.environ.get('BEDROCK_PROJECT_ARN')  # Optional - will auto-create if not provided
+        project_name = os.environ.get('BEDROCK_PROJECT_NAME', 'chronicling-america-extraction')
         output_bucket = bucket or os.environ.get('DATA_BUCKET')
         
-        if not project_arn:
-            raise ValueError("BEDROCK_PROJECT_ARN environment variable not set")
         if not output_bucket:
             raise ValueError("DATA_BUCKET environment variable not set")
         
         # Initialize components (Dependency Injection)
-        da_client = BedrockDataAutomationClient(region, profile_arn, project_arn)
+        # Project ARN is optional - will be created automatically if not provided
+        da_client = BedrockDataAutomationClient(region, profile_arn, project_arn, project_name)
         s3_handler = S3DocumentHandler()
         orchestrator = DataAutomationOrchestrator(da_client, s3_handler, output_bucket)
         
