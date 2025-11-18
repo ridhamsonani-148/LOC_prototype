@@ -11,12 +11,12 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 s3_client = boto3.client('s3')
-bedrock_da = boto3.client('bedrock-data-automation')
-bedrock_da_runtime = boto3.client('bedrock-data-automation-runtime')
+bedrock_da = boto3.client('bedrock')
+bedrock_da_runtime = boto3.client('bedrock-runtime')
 
 DATA_BUCKET = os.environ['DATA_BUCKET']
-AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
-AWS_ACCOUNT_ID = os.environ.get('AWS_ACCOUNT_ID', '541064517181')
+AWS_REGION = os.environ.get('AWS_REGION')
+AWS_ACCOUNT_ID = os.environ.get('AWS_ACCOUNT_ID')
 
 def lambda_handler(event, context):
     """
