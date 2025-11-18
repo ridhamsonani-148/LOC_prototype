@@ -57,19 +57,44 @@ class BedrockDataAutomationClient:
         if self.project_arn:
             return self.project_arn
         
-        logger.info(f"Checking if project '{self.project_name}' exists...")
+        logger.info(f"Checking if project '{self.project_name}' exists in region {self.region}...")
         
+        # First, list all existing projects
         try:
-            # Check if project exists
-            response = self.bedrock_da.list_data_automation_projects()
-            for project in response.get('projects', []):
-                if project['projectName'] == self.project_name:
-                    self.project_arn = project['projectArn']
-                    logger.info(f"Found existing project: {self.project_arn}")
-                    return self.project_arn
+            next_token = None
+            all_projects = []
+            while True:
+                if next_token:
+                    response = self.bedrock_da.list_data_automation_projects(nextToken=next_token)
+                else:
+                    response = self.bedrock_da.list_data_automation_projects()
+                
+                projects = response.get('projects', [])
+                all_projects.extend(projects)
+                logger.info(f"Found {len(projects)} projects in this page")
+                
+                for project in projects:
+                    logger.info(f"  - {project['projectName']}: {project['projectArn']} (stage: {project.get('projectStage', 'N/A')})")
+                    if project['projectName'] == self.project_name:
+                        self.project_arn = project['projectArn']
+                        logger.info(f"✅ Found existing project: {self.project_arn}")
+                        return self.project_arn
+                
+                next_token = response.get('nextToken')
+                if not next_token:
+                    break
             
-            # Create new project
+            logger.info(f"Project '{self.project_name}' not found in {len(all_projects)} existing projects")
+            
+        except Exception as e:
+            logger.error(f"Error listing projects: {e}")
+            # Continue to try creating the project
+        
+        # Project doesn't exist, create it
+        try:
             logger.info(f"Creating new Data Automation project: {self.project_name}")
+            logger.info(f"Region: {self.region}")
+            
             response = self.bedrock_da.create_data_automation_project(
                 projectName=self.project_name,
                 projectDescription="Historical newspaper data extraction with entity and relationship analysis",
@@ -100,22 +125,38 @@ class BedrockDataAutomationClient:
             )
             
             self.project_arn = response['projectArn']
-            logger.info(f"Created project: {self.project_arn}")
+            logger.info(f"✅ Created project: {self.project_arn}")
             return self.project_arn
             
-        except self.bedrock_da.exceptions.ConflictException as e:
-            # Project already exists, fetch it
-            logger.info(f"Project already exists, fetching ARN...")
-            response = self.bedrock_da.list_data_automation_projects()
-            for project in response.get('projects', []):
-                if project['projectName'] == self.project_name:
-                    self.project_arn = project['projectArn']
-                    logger.info(f"Found existing project: {self.project_arn}")
-                    return self.project_arn
-            raise RuntimeError(f"Project '{self.project_name}' exists but could not be found in list")
         except Exception as e:
-            logger.error(f"Error ensuring project exists: {e}")
-            raise
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown') if hasattr(e, 'response') else 'Unknown'
+            error_msg = str(e)
+            
+            logger.error(f"❌ Failed to create project: {error_code} - {error_msg}")
+            
+            # If it's a ConflictException, the project might have just been created
+            if 'ConflictException' in error_code or 'already exists' in error_msg.lower():
+                logger.warning("ConflictException - project may have been created by another process, retrying list...")
+                
+                # Try listing one more time
+                try:
+                    response = self.bedrock_da.list_data_automation_projects()
+                    for project in response.get('projects', []):
+                        if project['projectName'] == self.project_name:
+                            self.project_arn = project['projectArn']
+                            logger.info(f"✅ Found project after conflict: {self.project_arn}")
+                            return self.project_arn
+                except Exception as list_error:
+                    logger.error(f"Failed to list projects after conflict: {list_error}")
+            
+            # Provide helpful error message
+            raise RuntimeError(
+                f"Failed to create or find project '{self.project_name}' in region {self.region}. "
+                f"Error: {error_code} - {error_msg}. "
+                f"Suggestions: 1) Verify Bedrock Data Automation is available in {self.region}, "
+                f"2) Check IAM permissions for bedrock:CreateDataAutomationProject, "
+                f"3) Or set BEDROCK_PROJECT_ARN environment variable to use an existing project"
+            )
     
     def invoke_data_automation(self,
                                input_s3_uri: str,
@@ -334,7 +375,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             raise ValueError("Missing required parameters: pdf_s3_uri and pdf_key")
         
         # Get configuration from environment
-        region = os.environ.get('AWS_REGION', 'us-west-2')
+        region = os.environ.get('BEDROCK_REGION') or os.environ.get('AWS_REGION', 'us-west-2')
+        logger.info(f"Using region: {region}")
+        
         profile_arn = os.environ.get(
             'BEDROCK_PROFILE_ARN',
             f'arn:aws:bedrock:{region}:803633136603:data-automation-profile/us.data-automation-v1'
@@ -342,6 +385,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         project_arn = os.environ.get('BEDROCK_PROJECT_ARN')  # Optional - will auto-create if not provided
         project_name = os.environ.get('BEDROCK_PROJECT_NAME', 'chronicling-america-extraction')
         output_bucket = bucket or os.environ.get('DATA_BUCKET')
+        
+        logger.info(f"Configuration: region={region}, project_name={project_name}, output_bucket={output_bucket}")
         
         if not output_bucket:
             raise ValueError("DATA_BUCKET environment variable not set")

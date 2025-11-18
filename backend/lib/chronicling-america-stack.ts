@@ -261,6 +261,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         environment: {
           DATA_BUCKET: dataBucket.bucketName,
           AWS_ACCOUNT_ID: this.account,
+          BEDROCK_REGION: this.region,
+          LOG_LEVEL: "INFO",
         },
         logGroup: bedrockDataAutomationLogGroup,
       }
