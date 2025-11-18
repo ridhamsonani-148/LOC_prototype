@@ -358,13 +358,52 @@ class DataAutomationOrchestrator:
         status_response = self.da_client.wait_for_completion(invocation_arn)
         processing_time = time.time() - start_time
         
-        # Create result
+        # Get the job_metadata.json to find the actual output file
+        job_metadata_s3_uri = status_response['outputConfiguration']['s3Uri']
+        logger.info(f"Job metadata URI: {job_metadata_s3_uri}")
+        
+        # Read job_metadata.json to get the actual extracted data path
+        import re
+        match = re.match(r's3://([^/]+)/(.+)', job_metadata_s3_uri)
+        if match:
+            bucket = match.group(1)
+            job_metadata_key = match.group(2)
+            
+            # Read job_metadata.json
+            s3 = boto3.client('s3')
+            try:
+                response = s3.get_object(Bucket=bucket, Key=job_metadata_key)
+                job_metadata = json.loads(response['Body'].read().decode('utf-8'))
+                
+                # Extract the standard_output_path from job_metadata
+                # Path: output_metadata[0].segment_metadata[0].standard_output_path
+                standard_output_path = (
+                    job_metadata
+                    .get('output_metadata', [{}])[0]
+                    .get('segment_metadata', [{}])[0]
+                    .get('standard_output_path', '')
+                )
+                
+                if standard_output_path:
+                    logger.info(f"Found standard output path: {standard_output_path}")
+                    actual_output_s3_uri = standard_output_path
+                else:
+                    logger.warning("No standard_output_path found in job_metadata, using job_metadata URI")
+                    actual_output_s3_uri = job_metadata_s3_uri
+                    
+            except Exception as e:
+                logger.error(f"Error reading job_metadata.json: {e}")
+                actual_output_s3_uri = job_metadata_s3_uri
+        else:
+            actual_output_s3_uri = job_metadata_s3_uri
+        
+        # Create result with the actual output file path
         result = ProcessingResult(
             document_id=document_id,
             source_pdf=input_s3_uri,
             invocation_arn=invocation_arn,
             status=status_response['status'],
-            output_s3_uri=status_response['outputConfiguration']['s3Uri'],
+            output_s3_uri=actual_output_s3_uri,
             processing_time_seconds=processing_time
         )
         
@@ -445,13 +484,23 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Format response for Step Functions
         if result['total_processed'] > 0:
             processing_result = result['results'][0]
+            
+            # Extract S3 key from output_s3_uri for entity extractor
+            output_s3_uri = processing_result['output_s3_uri']
+            import re
+            match = re.match(r's3://[^/]+/(.+)', output_s3_uri)
+            s3_key = match.group(1) if match else None
+            
+            logger.info(f"Passing to next Lambda - s3_key: {s3_key}")
+            
             return {
                 'statusCode': 200,
                 'document_id': processing_result['document_id'],
                 'source_pdf': processing_result['source_pdf'],
                 'invocation_arn': processing_result['invocation_arn'],
                 'status': processing_result['status'],
-                'output_s3_uri': processing_result['output_s3_uri'],
+                'output_s3_uri': output_s3_uri,
+                's3_key': s3_key,
                 'processing_time_seconds': processing_result['processing_time_seconds'],
                 'bucket': output_bucket,
                 'pdf_key': pdf_key
