@@ -103,6 +103,16 @@ class BedrockDataAutomationClient:
             logger.info(f"Created project: {self.project_arn}")
             return self.project_arn
             
+        except self.bedrock_da.exceptions.ConflictException as e:
+            # Project already exists, fetch it
+            logger.info(f"Project already exists, fetching ARN...")
+            response = self.bedrock_da.list_data_automation_projects()
+            for project in response.get('projects', []):
+                if project['projectName'] == self.project_name:
+                    self.project_arn = project['projectArn']
+                    logger.info(f"Found existing project: {self.project_arn}")
+                    return self.project_arn
+            raise RuntimeError(f"Project '{self.project_name}' exists but could not be found in list")
         except Exception as e:
             logger.error(f"Error ensuring project exists: {e}")
             raise
