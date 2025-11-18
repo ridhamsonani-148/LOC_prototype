@@ -49,6 +49,35 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       ],
     });
 
+    // Grant Bedrock Data Automation service access to S3 bucket
+    dataBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal("bedrock.amazonaws.com")],
+        actions: ["s3:GetObject", "s3:PutObject"],
+        resources: [`${dataBucket.bucketArn}/*`],
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+          },
+        },
+      })
+    );
+
+    dataBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal("bedrock.amazonaws.com")],
+        actions: ["s3:ListBucket"],
+        resources: [dataBucket.bucketArn],
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+          },
+        },
+      })
+    );
+
     // ========================================
     // VPC for Neptune
     // ========================================
@@ -139,6 +168,20 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     // Grant S3 permissions
     dataBucket.grantReadWrite(lambdaRole);
+
+    // Grant IAM PassRole permission for Bedrock Data Automation
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [lambdaRole.roleArn],
+        conditions: {
+          StringEquals: {
+            "iam:PassedToService": "bedrock.amazonaws.com",
+          },
+        },
+      })
+    );
 
     // Grant Bedrock permissions
     lambdaRole.addToPolicy(
@@ -283,11 +326,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:CreateBlueprint",
           "bedrock:GetBlueprint",
           "bedrock:ListBlueprints",
-          "bedrock:CreateDataAutomationProfile",
-          "bedrock:GetDataAutomationProfile",
-          "bedrock:ListDataAutomationProfiles",
-          "bedrock:UpdateDataAutomationProfile",
-          "bedrock:DeleteDataAutomationProfile",
         ],
         resources: ["*"],
       })
@@ -297,10 +335,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     lambdaRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock-data-automation-runtime:InvokeDataAutomationAsync",
-          "bedrock-data-automation-runtime:GetDataAutomationStatus",
-        ],
+        actions: ["bedrock-data-automation-runtime:*"],
         resources: ["*"],
       })
     );

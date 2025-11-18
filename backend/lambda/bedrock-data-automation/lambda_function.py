@@ -47,51 +47,6 @@ class BedrockDataAutomationClient:
         if not self.project_arn:
             logger.info("No project ARN provided, will create project on first use")
     
-    def ensure_profile_exists(self) -> str:
-        """
-        Ensure Data Automation profile exists, create if needed
-        
-        Returns:
-            Profile ARN
-        """
-        logger.info(f"Checking if profile exists: {self.profile_arn}")
-        
-        try:
-            # Try to get the profile
-            response = self.bedrock_da.get_data_automation_profile(
-                dataAutomationProfileArn=self.profile_arn
-            )
-            logger.info(f"✅ Profile exists: {self.profile_arn}")
-            return self.profile_arn
-        except self.bedrock_da.exceptions.ResourceNotFoundException:
-            logger.info(f"Profile not found, creating: {self.profile_arn}")
-        except Exception as e:
-            logger.warning(f"Error checking profile: {e}, will attempt to create")
-        
-        # Profile doesn't exist, create it
-        try:
-            logger.info(f"Creating Data Automation profile in region {self.region}")
-            
-            response = self.bedrock_da.create_data_automation_profile(
-                dataAutomationProfileName="us.data-automation-v1",
-                dataAutomationProfileDescription="Standard data automation profile for document processing"
-            )
-            
-            created_arn = response['dataAutomationProfileArn']
-            logger.info(f"✅ Created profile: {created_arn}")
-            return created_arn
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Failed to create profile: {error_msg}")
-            
-            # If profile already exists, return the ARN
-            if 'already exists' in error_msg.lower() or 'ConflictException' in error_msg:
-                logger.info("Profile already exists, using provided ARN")
-                return self.profile_arn
-            
-            raise RuntimeError(f"Failed to create profile: {error_msg}")
-    
     def ensure_project_exists(self) -> str:
         """
         Ensure Data Automation project exists, create if needed
@@ -243,12 +198,11 @@ class BedrockDataAutomationClient:
         Returns:
             Invocation ARN
         """
-        # Ensure profile and project exist before invoking
-        profile_arn = self.ensure_profile_exists()
+        # Ensure project exists before invoking
         project_arn = self.ensure_project_exists()
         
         logger.info(f"Invoking Data Automation for {input_s3_uri}")
-        logger.info(f"Using profile: {profile_arn}")
+        logger.info(f"Using profile: {self.profile_arn}")
         logger.info(f"Using project: {project_arn}")
         
         response = self.runtime.invoke_data_automation_async(
@@ -262,7 +216,7 @@ class BedrockDataAutomationClient:
                 'dataAutomationProjectArn': project_arn,
                 'stage': 'LIVE'
             },
-            dataAutomationProfileArn=profile_arn
+            dataAutomationProfileArn=self.profile_arn
         )
         
         invocation_arn = response['invocationArn']
