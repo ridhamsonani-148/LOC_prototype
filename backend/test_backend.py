@@ -66,7 +66,7 @@ def test_pipeline_execution(state_machine_arn):
     execution_input = {
         "start_date": "1815-08-01",
         "end_date": "1815-08-05",
-        "max_pages": 2
+        "max_pages": 20
     }
     
     print(f"Input: {json.dumps(execution_input, indent=2)}")
