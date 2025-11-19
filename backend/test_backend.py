@@ -8,6 +8,7 @@ import boto3
 import json
 import time
 import sys
+import argparse
 from datetime import datetime
 
 # Colors for terminal output
@@ -57,16 +58,16 @@ def get_stack_outputs():
         print("  cd backend && ./deploy.sh")
         sys.exit(1)
 
-def test_pipeline_execution(state_machine_arn):
+def test_pipeline_execution(state_machine_arn, start_date=None, end_date=None, max_pages=None):
     """Test Step Functions pipeline execution"""
     print_header("Test 1: Pipeline Execution")
     
     sf = boto3.client('stepfunctions')
     
     execution_input = {
-        "start_date": "1815-08-01",
-        "end_date": "1815-08-05",
-        "max_pages": 20
+        "start_date": start_date or "1815-08-01",
+        "end_date": end_date or "1815-08-05",
+        "max_pages": max_pages or 20
     }
     
     print(f"Input: {json.dumps(execution_input, indent=2)}")
@@ -84,7 +85,7 @@ def test_pipeline_execution(state_machine_arn):
         # Monitor execution
         print("\nMonitoring execution (max 10 minutes)...")
         max_wait = 600
-        wait_time = 0
+        wait_time = 10
         interval = 15
         
         while wait_time < max_wait:
@@ -182,6 +183,23 @@ def test_chat_api(api_url):
     return True
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Test Chronicling America Backend Pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python test_backend.py
+  python test_backend.py --max-pages 5
+  python test_backend.py --start-date 1815-08-01 --end-date 1815-08-10 --max-pages 10
+        '''
+    )
+    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 1815-08-01')
+    parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD), default: 1815-08-05')
+    parser.add_argument('--max-pages', type=int, help='Maximum pages to process, default: 20')
+    
+    args = parser.parse_args()
+    
     print(f"\n{BLUE}{'='*50}")
     print("Chronicling America Backend Testing")
     print(f"{'='*50}{NC}\n")
@@ -198,7 +216,12 @@ def main():
     
     # Test 1: Pipeline execution
     if state_machine_arn:
-        result = test_pipeline_execution(state_machine_arn)
+        result = test_pipeline_execution(
+            state_machine_arn,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            max_pages=args.max_pages
+        )
         results.append(('Pipeline Execution', result))
     
     # Test 2: S3 data
