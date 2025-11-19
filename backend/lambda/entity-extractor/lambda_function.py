@@ -52,31 +52,65 @@ def lambda_handler(event, context):
         print(f"Data keys: {data.keys() if isinstance(data, dict) else 'not a dict'}")
         
         # Handle Bedrock Data Automation output format
-        # The result.json contains extracted content in various formats
+        # The result.json has structure: {metadata, document, pages, elements, text_lines, text_words}
         if isinstance(data, dict):
-            # Check for common Bedrock Data Automation output structures
-            if 'content' in data:
-                # Extract text content
-                content = data['content']
-                if isinstance(content, str):
-                    results = [content]
-                elif isinstance(content, list):
-                    results = content
+            results = []
+            
+            # Extract text from document field
+            if 'document' in data and isinstance(data['document'], dict):
+                doc = data['document']
+                if 'text' in doc:
+                    results.append(doc['text'])
+                    print(f"Extracted text from document field: {len(doc['text'])} chars")
+            
+            # Extract text from pages
+            if 'pages' in data and isinstance(data['pages'], list):
+                for i, page in enumerate(data['pages']):
+                    if isinstance(page, dict):
+                        if 'text' in page:
+                            results.append(page['text'])
+                            print(f"Extracted text from page {i}: {len(page['text'])} chars")
+                        elif 'content' in page:
+                            results.append(page['content'])
+                            print(f"Extracted content from page {i}: {len(page['content'])} chars")
+            
+            # Extract text from text_lines
+            if not results and 'text_lines' in data and isinstance(data['text_lines'], list):
+                text_parts = []
+                for line in data['text_lines']:
+                    if isinstance(line, dict) and 'text' in line:
+                        text_parts.append(line['text'])
+                    elif isinstance(line, str):
+                        text_parts.append(line)
+                if text_parts:
+                    combined_text = '\n'.join(text_parts)
+                    results.append(combined_text)
+                    print(f"Extracted text from {len(text_parts)} text_lines: {len(combined_text)} chars")
+            
+            # Extract text from text_words as last resort
+            if not results and 'text_words' in data and isinstance(data['text_words'], list):
+                text_parts = []
+                for word in data['text_words']:
+                    if isinstance(word, dict) and 'text' in word:
+                        text_parts.append(word['text'])
+                    elif isinstance(word, str):
+                        text_parts.append(word)
+                if text_parts:
+                    combined_text = ' '.join(text_parts)
+                    results.append(combined_text)
+                    print(f"Extracted text from {len(text_parts)} text_words: {len(combined_text)} chars")
+            
+            # If still no results, try other common fields
+            if not results:
+                if 'content' in data:
+                    results = [data['content']] if isinstance(data['content'], str) else data['content']
+                elif 'text' in data:
+                    results = [data['text']]
                 else:
+                    # Last resort: treat whole dict as one result
                     results = [data]
-            elif 'text' in data:
-                results = [data['text']]
-            elif 'pages' in data:
-                # Extract text from pages
-                results = []
-                for page in data.get('pages', []):
-                    if isinstance(page, dict) and 'text' in page:
-                        results.append(page['text'])
-                    elif isinstance(page, str):
-                        results.append(page)
-            else:
-                # Fallback: treat the whole dict as one result
-                results = [data]
+                    print("No text fields found, using entire data structure")
+                    
         elif isinstance(data, list):
             results = data
         else:
