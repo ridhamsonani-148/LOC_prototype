@@ -5,7 +5,9 @@ Provides chat interface for querying Neptune knowledge graph
 
 import json
 import os
+import time
 import boto3
+from botocore.exceptions import ClientError
 from gremlin_python.driver import client, serializer
 from gremlin_python.driver.protocol import GremlinServerError
 
@@ -98,6 +100,49 @@ def lambda_handler(event, context):
         }
 
 
+def invoke_bedrock_with_retry(prompt: str, max_retries: int = 5) -> str:
+    """Invoke Bedrock with exponential backoff retry logic"""
+    
+    request_body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 500,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}]
+            }
+        ]
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            response = bedrock_runtime.invoke_model(
+                modelId=BEDROCK_MODEL_ID,
+                body=json.dumps(request_body)
+            )
+            
+            response_body = json.loads(response['body'].read())
+            return response_body['content'][0]['text'].strip()
+            
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            
+            if error_code == 'ThrottlingException':
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                    wait_time = 2 ** attempt
+                    print(f"Throttled, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception("Too many requests. Please wait a moment and try again.")
+            else:
+                # For other errors, raise immediately
+                raise
+    
+    raise Exception("Max retries exceeded")
+
+
 def generate_gremlin_query(question: str) -> str:
     """Generate Gremlin query from natural language question"""
     
@@ -124,24 +169,7 @@ A: g.V().hasLabel('PERSON').out('LOCATED_IN').has('name', containing('Providence
 
 Now generate query for: {question}"""
     
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 500,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}]
-            }
-        ]
-    }
-    
-    response = bedrock_runtime.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
-        body=json.dumps(request_body)
-    )
-    
-    response_body = json.loads(response['body'].read())
-    query = response_body['content'][0]['text'].strip()
+    query = invoke_bedrock_with_retry(prompt)
     
     # Clean up query
     query = query.replace('```', '').replace('gremlin', '').strip()
@@ -191,23 +219,6 @@ Results:
 
 Provide a clear, concise answer in 2-3 sentences."""
     
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 500,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}]
-            }
-        ]
-    }
-    
-    response = bedrock_runtime.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
-        body=json.dumps(request_body)
-    )
-    
-    response_body = json.loads(response['body'].read())
-    answer = response_body['content'][0]['text'].strip()
+    answer = invoke_bedrock_with_retry(prompt)
     
     return answer

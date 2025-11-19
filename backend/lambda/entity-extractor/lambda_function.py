@@ -56,6 +56,18 @@ def lambda_handler(event, context):
         if isinstance(data, dict):
             results = []
             
+            # Log structure for debugging
+            if 'document' in data:
+                print(f"Document field type: {type(data['document'])}")
+                if isinstance(data['document'], dict):
+                    print(f"Document keys: {data['document'].keys()}")
+            if 'pages' in data:
+                print(f"Pages field type: {type(data['pages'])}, length: {len(data['pages']) if isinstance(data['pages'], list) else 'N/A'}")
+                if isinstance(data['pages'], list) and len(data['pages']) > 0:
+                    print(f"First page type: {type(data['pages'][0])}")
+                    if isinstance(data['pages'][0], dict):
+                        print(f"First page keys: {data['pages'][0].keys()}")
+            
             # Extract text from document field
             if 'document' in data and isinstance(data['document'], dict):
                 doc = data['document']
@@ -64,7 +76,7 @@ def lambda_handler(event, context):
                     print(f"Extracted text from document field: {len(doc['text'])} chars")
             
             # Extract text from pages
-            if 'pages' in data and isinstance(data['pages'], list):
+            if 'pages' in data and isinstance(data['pages'], list) and len(data['pages']) > 0:
                 for i, page in enumerate(data['pages']):
                     if isinstance(page, dict):
                         if 'text' in page:
@@ -73,6 +85,7 @@ def lambda_handler(event, context):
                         elif 'content' in page:
                             results.append(page['content'])
                             print(f"Extracted content from page {i}: {len(page['content'])} chars")
+                print(f"Total pages processed: {len(data['pages'])}, texts extracted: {len([r for r in results])}")
             
             # Extract text from text_lines
             if not results and 'text_lines' in data and isinstance(data['text_lines'], list):
