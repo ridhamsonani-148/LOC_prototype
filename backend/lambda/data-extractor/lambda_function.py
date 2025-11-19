@@ -50,7 +50,7 @@ def lambda_handler(event, context):
     
     # Process each image
     results = []
-    for i, image_record in enumerate(images[:5]):  # Limit to 5 for Lambda timeout
+    for i, image_record in enumerate(images[:50]):  # Limit to 5 for Lambda timeout
         print(f"Processing image {i+1}/{len(images[:5])}: {image_record.get('title', 'Unknown')}")
         
         try:
