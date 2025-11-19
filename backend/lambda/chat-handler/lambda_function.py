@@ -63,16 +63,15 @@ def lambda_handler(event, context):
         
         print(f"Question: {question}")
         
-        # Generate Gremlin query from question
-        gremlin_query = generate_gremlin_query(question)
+        # Generate query and answer in single Bedrock call
+        response = answer_question_single_call(question)
+        
+        gremlin_query = response['query']
+        answer = response['answer']
+        results = response['results']
+        
         print(f"Generated query: {gremlin_query}")
-        
-        # Execute query on Neptune
-        results = execute_neptune_query(gremlin_query)
         print(f"Query results: {len(results)} items")
-        
-        # Generate natural language response
-        answer = generate_answer(question, results)
         
         return {
             'statusCode': 200,
@@ -143,38 +142,129 @@ def invoke_bedrock_with_retry(prompt: str, max_retries: int = 5) -> str:
     raise Exception("Max retries exceeded")
 
 
-def generate_gremlin_query(question: str) -> str:
-    """Generate Gremlin query from natural language question"""
+def answer_question_single_call(question: str) -> dict:
+    """Answer question using single Bedrock call - generates query and executes it"""
     
-    prompt = f"""Convert this question into a Gremlin query for a Neptune graph database.
+    prompt = f"""You are a Neptune graph database assistant for historical newspapers.
 
 Question: {question}
 
 Graph schema:
-- Vertices: PERSON, LOCATION, ORGANIZATION, EVENT, DATE, DOCUMENT
+- Vertices: PERSON (name), LOCATION (name), ORGANIZATION (name), EVENT (name), DATE (date), DOCUMENT (document_id, source, publication_date)
 - Edges: MENTIONED_IN, LOCATED_IN, WORKS_FOR, PARTICIPATED_IN
-- Properties: id, name, confidence
+- Properties: id, name, confidence, document_id, source, publication_date
 
-Return only the Gremlin query, no explanation.
+Task: Generate a Gremlin query to answer this question.
 
 Examples:
 Q: "Who are the people mentioned?"
-A: g.V().hasLabel('PERSON').values('name').dedup().limit(10)
+A: g.V().hasLabel('PERSON').values('name').dedup().limit(20)
 
 Q: "What locations are mentioned?"
-A: g.V().hasLabel('LOCATION').values('name').dedup().limit(10)
+A: g.V().hasLabel('LOCATION').values('name').dedup().limit(20)
+
+Q: "What organizations are mentioned?"
+A: g.V().hasLabel('ORGANIZATION').values('name').dedup().limit(20)
 
 Q: "Find people in Providence"
 A: g.V().hasLabel('PERSON').out('LOCATED_IN').has('name', containing('Providence')).in('LOCATED_IN').values('name').dedup()
 
-Now generate query for: {question}"""
+Q: "What events are mentioned?"
+A: g.V().hasLabel('EVENT').values('name').dedup().limit(20)
+
+Q: "Show me documents from 1815"
+A: g.V().hasLabel('DOCUMENT').has('publication_date', containing('1815')).valueMap()
+
+Return ONLY the Gremlin query, no explanation or markdown."""
     
+    # Get query from Bedrock
     query = invoke_bedrock_with_retry(prompt)
     
     # Clean up query
     query = query.replace('```', '').replace('gremlin', '').strip()
     
-    return query
+    print(f"Generated query: {query}")
+    
+    # Execute query on Neptune
+    results = execute_neptune_query(query)
+    
+    print(f"Query returned {len(results)} results")
+    
+    # Format answer based on results
+    answer = format_answer_from_results(question, results)
+    
+    return {
+        'query': query,
+        'answer': answer,
+        'results': results
+    }
+
+
+def format_answer_from_results(question: str, results: list) -> str:
+    """Format answer from query results without additional Bedrock call"""
+    
+    if not results:
+        return "I couldn't find any information about that in the historical newspapers."
+    
+    # Determine result type and format accordingly
+    question_lower = question.lower()
+    
+    # Handle different query types
+    if 'who' in question_lower or 'people' in question_lower or 'person' in question_lower:
+        if len(results) == 1:
+            return f"I found one person mentioned: {results[0]}."
+        else:
+            names = ', '.join(str(r) for r in results[:10])
+            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
+            return f"I found {len(results)} people mentioned in the historical newspapers: {names}{more}."
+    
+    elif 'where' in question_lower or 'location' in question_lower or 'place' in question_lower:
+        if len(results) == 1:
+            return f"The newspapers mention this location: {results[0]}."
+        else:
+            locations = ', '.join(str(r) for r in results[:10])
+            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
+            return f"The newspapers mention {len(results)} locations: {locations}{more}."
+    
+    elif 'organization' in question_lower or 'company' in question_lower or 'business' in question_lower:
+        if len(results) == 1:
+            return f"I found this organization: {results[0]}."
+        else:
+            orgs = ', '.join(str(r) for r in results[:10])
+            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
+            return f"I found {len(results)} organizations mentioned: {orgs}{more}."
+    
+    elif 'event' in question_lower or 'happen' in question_lower:
+        if len(results) == 1:
+            return f"The newspapers mention this event: {results[0]}."
+        else:
+            events = ', '.join(str(r) for r in results[:10])
+            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
+            return f"The newspapers mention {len(results)} events: {events}{more}."
+    
+    elif 'document' in question_lower or 'newspaper' in question_lower or 'article' in question_lower:
+        if isinstance(results[0], dict):
+            # Handle document results with metadata
+            doc_summaries = []
+            for doc in results[:5]:
+                source = doc.get('source', ['Unknown'])[0] if isinstance(doc.get('source'), list) else doc.get('source', 'Unknown')
+                date = doc.get('publication_date', ['Unknown'])[0] if isinstance(doc.get('publication_date'), list) else doc.get('publication_date', 'Unknown')
+                doc_summaries.append(f"{source} ({date})")
+            
+            more = f" and {len(results) - 5} more" if len(results) > 5 else ""
+            return f"I found {len(results)} documents: {'; '.join(doc_summaries)}{more}."
+        else:
+            return f"I found {len(results)} documents in the database."
+    
+    else:
+        # Generic response for other queries
+        if len(results) <= 3:
+            items = ', '.join(str(r) for r in results)
+            return f"I found: {items}."
+        else:
+            items = ', '.join(str(r) for r in results[:10])
+            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
+            return f"I found {len(results)} results: {items}{more}."
 
 
 def execute_neptune_query(query: str) -> list:
@@ -201,24 +291,4 @@ def execute_neptune_query(query: str) -> list:
         return []
 
 
-def generate_answer(question: str, results: list) -> str:
-    """Generate natural language answer from query results"""
-    
-    if not results:
-        return "I couldn't find any information about that in the historical newspapers."
-    
-    # Format results
-    results_text = "\n".join([str(r) for r in results[:20]])  # Limit to 20 results
-    
-    prompt = f"""Based on these query results from historical newspapers, answer the question.
 
-Question: {question}
-
-Results:
-{results_text}
-
-Provide a clear, concise answer in 2-3 sentences."""
-    
-    answer = invoke_bedrock_with_retry(prompt)
-    
-    return answer
