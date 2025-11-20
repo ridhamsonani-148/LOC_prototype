@@ -219,23 +219,56 @@ def build_text_from_extraction(extraction: dict) -> str:
 def extract_entities_and_relationships(text: str, context: dict) -> dict:
     """Extract entities and relationships using Bedrock"""
     
-    prompt = f"""Analyze this historical newspaper content and extract entities and relationships.
+    prompt = f"""Analyze this historical newspaper content (1815-1820) and extract ALL entities and relationships comprehensively.
 
 Content:
 {text}
 
-Extract:
-1. ENTITIES with types: PERSON, LOCATION, ORGANIZATION, EVENT, DATE
-2. RELATIONSHIPS between entities
+Extract EVERYTHING mentioned:
 
-Return JSON:
+ENTITY TYPES (extract ALL):
+- PERSON: Names of people (politicians, military, citizens, authors)
+- LOCATION: Places (cities, states, countries, buildings, streets, ports)
+- ORGANIZATION: Groups (businesses, government bodies, military units, societies, newspapers)
+- EVENT: Happenings (battles, meetings, elections, arrivals, departures, deaths, births)
+- NEWSPAPER: Publication details (title, date, location, publisher)
+- ARTICLE: Article metadata (headline, summary, topic)
+- ADVERTISEMENT: Products/services advertised (product, company, price, description)
+- SHIP: Vessel names and types
+- COMMODITY: Goods mentioned (cotton, tobacco, flour, etc.)
+- PRICE: Monetary values and prices
+- DATE: Specific dates and time periods
+- OCCUPATION: Jobs and professions mentioned
+- MILITARY_UNIT: Army/Navy units
+- GOVERNMENT_POSITION: Political offices and titles
+
+RELATIONSHIP TYPES (extract ALL connections):
+- MENTIONED_IN: Entity appears in article/newspaper
+- LOCATED_IN: Entity is in a location
+- WORKS_FOR: Person works for organization
+- PARTICIPATED_IN: Person involved in event
+- PUBLISHED_BY: Article published by newspaper
+- ADVERTISED_IN: Product advertised in newspaper
+- TRAVELED_TO: Person/ship traveled to location
+- HOLDS_POSITION: Person holds government/military position
+- COMMANDS: Military officer commands unit
+- TRADED: Commodity traded at location
+- PRICED_AT: Commodity has price
+- RELATED_TO: General relationship between entities
+- OCCURRED_IN: Event happened in location
+- OCCURRED_ON: Event happened on date
+
+Return comprehensive JSON with ALL entities and relationships found:
 {{
   "entities": [
     {{
       "id": "unique_id",
-      "type": "PERSON|LOCATION|ORGANIZATION|EVENT|DATE",
+      "type": "PERSON|LOCATION|ORGANIZATION|EVENT|NEWSPAPER|ARTICLE|ADVERTISEMENT|SHIP|COMMODITY|PRICE|DATE|OCCUPATION|MILITARY_UNIT|GOVERNMENT_POSITION",
       "name": "Entity name",
-      "properties": {{}},
+      "properties": {{
+        "context": "surrounding text",
+        "additional_info": "any relevant details"
+      }},
       "confidence": 0.9
     }}
   ],
@@ -244,14 +277,16 @@ Return JSON:
       "id": "rel_id",
       "source": "entity_id",
       "target": "entity_id",
-      "type": "MENTIONED_IN|LOCATED_IN|WORKS_FOR|PARTICIPATED_IN",
-      "properties": {{}},
+      "type": "MENTIONED_IN|LOCATED_IN|WORKS_FOR|PARTICIPATED_IN|PUBLISHED_BY|ADVERTISED_IN|TRAVELED_TO|HOLDS_POSITION|COMMANDS|TRADED|PRICED_AT|RELATED_TO|OCCURRED_IN|OCCURRED_ON",
+      "properties": {{
+        "context": "how they're related"
+      }},
       "confidence": 0.9
     }}
   ]
 }}
 
-Return only valid JSON."""
+Be thorough - extract EVERY entity and relationship you can find. Return only valid JSON."""
     
     request_body = {
         "anthropic_version": "bedrock-2023-05-31",

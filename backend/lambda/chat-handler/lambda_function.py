@@ -143,45 +143,63 @@ def invoke_bedrock_with_retry(prompt: str, max_retries: int = 5) -> str:
 
 
 def answer_question_single_call(question: str) -> dict:
-    """Answer question using single Bedrock call - generates query and executes it"""
+    """Answer question using Claude - generates query and executes it"""
     
-    prompt = f"""You are a Neptune graph database assistant for historical newspapers.
+    prompt = f"""You are a Neptune graph database expert for historical newspapers (1815-1820).
 
-Question: {question}
+User Question: {question}
 
-Graph schema:
-- Vertices: PERSON (name), LOCATION (name), ORGANIZATION (name), EVENT (name), DATE (date), DOCUMENT (document_id, source, publication_date)
-- Edges: MENTIONED_IN, LOCATED_IN, WORKS_FOR, PARTICIPATED_IN
-- Properties: id, name, confidence, document_id, source, publication_date
+Graph Schema:
+Vertices (Nodes):
+- PERSON: name, confidence, context
+- LOCATION: name, confidence, type (city/state/country)
+- ORGANIZATION: name, confidence, type (business/government/military)
+- EVENT: name, date, description, confidence
+- NEWSPAPER: title, publication_date, location, publisher
+- ARTICLE: headline, summary, date, newspaper_id
+- ADVERTISEMENT: product, company, price, date
 
-Task: Generate a Gremlin query to answer this question.
+Edges (Relationships):
+- MENTIONED_IN: Person/Location/Org → Article/Newspaper
+- LOCATED_IN: Person/Org/Event → Location
+- WORKS_FOR: Person → Organization
+- PARTICIPATED_IN: Person → Event
+- PUBLISHED_BY: Article → Newspaper
+- ADVERTISED_IN: Advertisement → Newspaper
+- RELATED_TO: Any → Any (general relationship)
 
-Examples:
-Q: "Who are the people mentioned?"
-A: g.V().hasLabel('PERSON').values('name').dedup().limit(20)
+Common Query Patterns:
 
-Q: "What locations are mentioned?"
-A: g.V().hasLabel('LOCATION').values('name').dedup().limit(20)
+1. List entities:
+   g.V().hasLabel('PERSON').values('name').dedup().limit(50)
 
-Q: "What organizations are mentioned?"
-A: g.V().hasLabel('ORGANIZATION').values('name').dedup().limit(20)
+2. Find relationships:
+   g.V().hasLabel('PERSON').has('name', 'George Washington').out('MENTIONED_IN').values('title')
 
-Q: "Find people in Providence"
-A: g.V().hasLabel('PERSON').out('LOCATED_IN').has('name', containing('Providence')).in('LOCATED_IN').values('name').dedup()
+3. Filter by property:
+   g.V().hasLabel('NEWSPAPER').has('publication_date', containing('1815')).valueMap()
 
-Q: "What events are mentioned?"
-A: g.V().hasLabel('EVENT').values('name').dedup().limit(20)
+4. Count entities:
+   g.V().hasLabel('LOCATION').count()
 
-Q: "Show me documents from 1815"
-A: g.V().hasLabel('DOCUMENT').has('publication_date', containing('1815')).valueMap()
+5. Complex traversal:
+   g.V().hasLabel('PERSON').out('LOCATED_IN').has('name', containing('Providence')).in('LOCATED_IN').values('name').dedup()
 
-Return ONLY the Gremlin query, no explanation or markdown."""
+6. Get full details:
+   g.V().hasLabel('EVENT').valueMap(true).limit(10)
+
+7. Find connections:
+   g.V().has('name', 'Aaron Burr').both().values('name').dedup()
+
+Now generate a Gremlin query for: {question}
+
+Return ONLY the Gremlin query, no explanation, no markdown, no code blocks."""
     
     # Get query from Bedrock
     query = invoke_bedrock_with_retry(prompt)
     
     # Clean up query
-    query = query.replace('```', '').replace('gremlin', '').strip()
+    query = query.replace('```', '').replace('gremlin', '').replace('```python', '').strip()
     
     print(f"Generated query: {query}")
     
@@ -190,7 +208,7 @@ Return ONLY the Gremlin query, no explanation or markdown."""
     
     print(f"Query returned {len(results)} results")
     
-    # Format answer based on results
+    # Format answer based on results using Claude
     answer = format_answer_from_results(question, results)
     
     return {
@@ -201,70 +219,34 @@ Return ONLY the Gremlin query, no explanation or markdown."""
 
 
 def format_answer_from_results(question: str, results: list) -> str:
-    """Format answer from query results without additional Bedrock call"""
+    """Format answer from query results using Claude - NO hardcoded conditions"""
     
     if not results:
         return "I couldn't find any information about that in the historical newspapers."
     
-    # Determine result type and format accordingly
-    question_lower = question.lower()
+    # Let Claude format the answer naturally based on the question and results
+    # Limit results to avoid token limits
+    results_sample = results[:50] if len(results) > 50 else results
     
-    # Handle different query types
-    if 'who' in question_lower or 'people' in question_lower or 'person' in question_lower:
-        if len(results) == 1:
-            return f"I found one person mentioned: {results[0]}."
-        else:
-            names = ', '.join(str(r) for r in results[:10])
-            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
-            return f"I found {len(results)} people mentioned in the historical newspapers: {names}{more}."
+    prompt = f"""You are a helpful assistant answering questions about historical newspapers from 1815-1820.
+
+User Question: {question}
+
+Query Results: {json.dumps(results_sample, indent=2)}
+
+Total Results: {len(results)}
+
+Instructions:
+1. Answer the user's question naturally and conversationally
+2. Use the query results to provide specific information
+3. If there are many results, summarize the key findings
+4. Be concise but informative
+5. Don't mention "query results" or technical details
+6. If results are empty or unclear, say you couldn't find that information
+
+Provide a natural, helpful answer:"""
     
-    elif 'where' in question_lower or 'location' in question_lower or 'place' in question_lower:
-        if len(results) == 1:
-            return f"The newspapers mention this location: {results[0]}."
-        else:
-            locations = ', '.join(str(r) for r in results[:10])
-            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
-            return f"The newspapers mention {len(results)} locations: {locations}{more}."
-    
-    elif 'organization' in question_lower or 'company' in question_lower or 'business' in question_lower:
-        if len(results) == 1:
-            return f"I found this organization: {results[0]}."
-        else:
-            orgs = ', '.join(str(r) for r in results[:10])
-            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
-            return f"I found {len(results)} organizations mentioned: {orgs}{more}."
-    
-    elif 'event' in question_lower or 'happen' in question_lower:
-        if len(results) == 1:
-            return f"The newspapers mention this event: {results[0]}."
-        else:
-            events = ', '.join(str(r) for r in results[:10])
-            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
-            return f"The newspapers mention {len(results)} events: {events}{more}."
-    
-    elif 'document' in question_lower or 'newspaper' in question_lower or 'article' in question_lower:
-        if isinstance(results[0], dict):
-            # Handle document results with metadata
-            doc_summaries = []
-            for doc in results[:5]:
-                source = doc.get('source', ['Unknown'])[0] if isinstance(doc.get('source'), list) else doc.get('source', 'Unknown')
-                date = doc.get('publication_date', ['Unknown'])[0] if isinstance(doc.get('publication_date'), list) else doc.get('publication_date', 'Unknown')
-                doc_summaries.append(f"{source} ({date})")
-            
-            more = f" and {len(results) - 5} more" if len(results) > 5 else ""
-            return f"I found {len(results)} documents: {'; '.join(doc_summaries)}{more}."
-        else:
-            return f"I found {len(results)} documents in the database."
-    
-    else:
-        # Generic response for other queries
-        if len(results) <= 3:
-            items = ', '.join(str(r) for r in results)
-            return f"I found: {items}."
-        else:
-            items = ', '.join(str(r) for r in results[:10])
-            more = f" and {len(results) - 10} more" if len(results) > 10 else ""
-            return f"I found {len(results)} results: {items}{more}."
+    return invoke_bedrock_with_retry(prompt)
 
 
 def execute_neptune_query(query: str) -> list:

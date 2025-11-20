@@ -538,18 +538,18 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     // OPTION 1: Claude Vision approach (simpler, direct)
     // Images → Claude Vision → Entity Extractor → Neptune
-    const definition = collectImagesTask
-      .next(dataExtractorTask)
-      .next(extractEntitiesTask)
-      .next(loadToNeptuneTask);
-
-    // OPTION 2: Data Automation approach (better OCR)
-    // Images → PDF → Bedrock Data Automation → Entity Extractor → Neptune
     // const definition = collectImagesTask
-    //   .next(imageToPdfTask)
-    //   .next(bedrockDataAutomationTask)
+    //   .next(dataExtractorTask)
     //   .next(extractEntitiesTask)
     //   .next(loadToNeptuneTask);
+
+    // OPTION 2: Bedrock Data Automation approach (better OCR, no Lambda timeout)
+    // Images → PDF → Bedrock Data Automation → Entity Extractor → Neptune
+    const definition = collectImagesTask
+      .next(imageToPdfTask)
+      .next(bedrockDataAutomationTask)
+      .next(extractEntitiesTask)
+      .next(loadToNeptuneTask);
 
     const stateMachine = new stepfunctions.StateMachine(
       this,
@@ -627,28 +627,31 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // Auto-Start Pipeline After Deployment (Optional)
     // ========================================
     // Uncomment to automatically trigger pipeline after each deployment
-    
-    const autoStartPipeline = new cr.AwsCustomResource(this, 'AutoStartPipeline', {
-      onCreate: {
-        service: 'StepFunctions',
-        action: 'startExecution',
-        parameters: {
-          stateMachineArn: stateMachine.stateMachineArn,
-          input: JSON.stringify({
-            start_date: '1815-08-01',
-            end_date: '1820-08-31',
-            max_pages: 30
-          })
+
+    const autoStartPipeline = new cr.AwsCustomResource(
+      this,
+      "AutoStartPipeline",
+      {
+        onCreate: {
+          service: "StepFunctions",
+          action: "startExecution",
+          parameters: {
+            stateMachineArn: stateMachine.stateMachineArn,
+            input: JSON.stringify({
+              start_date: "1815-08-01",
+              end_date: "1820-08-31",
+              max_pages: 30,
+            }),
+          },
+          physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
         },
-        physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
-      },
-      policy: cr.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          actions: ['states:StartExecution'],
-          resources: [stateMachine.stateMachineArn],
-        }),
-      ]),
-    });
-    
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ["states:StartExecution"],
+            resources: [stateMachine.stateMachineArn],
+          }),
+        ]),
+      }
+    );
   }
 }
