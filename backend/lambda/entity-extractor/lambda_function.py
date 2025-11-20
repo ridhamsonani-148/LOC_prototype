@@ -219,6 +219,12 @@ def build_text_from_extraction(extraction: dict) -> str:
 def extract_entities_and_relationships(text: str, context: dict) -> dict:
     """Extract entities and relationships using Bedrock"""
     
+    # Claude 3.5 Sonnet has 200K token input limit (~800K chars)
+    # No need to truncate unless text is extremely large
+    if len(text) > 700000:
+        print(f"Text extremely long ({len(text)} chars), truncating to 700,000 chars")
+        text = text[:700000] + "\n\n[Text truncated due to length...]"
+    
     prompt = f"""Analyze this historical newspaper content (1815-1820) and extract ALL entities and relationships comprehensively.
 
 Content:
@@ -290,7 +296,7 @@ Be thorough - extract EVERY entity and relationship you can find. Return only va
     
     request_body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 4096,
+        "max_tokens": 8192,  # Maximum output tokens for Claude 3.5 Sonnet
         "messages": [
             {
                 "role": "user",
@@ -314,7 +320,25 @@ Be thorough - extract EVERY entity and relationship you can find. Return only va
         end = content.rfind('}') + 1
         if start >= 0 and end > start:
             json_str = content[start:end]
-            kg_data = json.loads(json_str)
+            
+            try:
+                kg_data = json.loads(json_str)
+            except json.JSONDecodeError as json_err:
+                print(f"JSON decode error: {json_err}")
+                print(f"Attempting to fix truncated JSON...")
+                
+                # Try to fix common issues with truncated JSON
+                # Add closing brackets if missing
+                if not json_str.rstrip().endswith('}'):
+                    json_str = json_str.rstrip().rstrip(',') + ']}}' 
+                
+                try:
+                    kg_data = json.loads(json_str)
+                    print("Successfully recovered from truncated JSON")
+                except:
+                    print("Could not recover JSON, returning empty knowledge graph")
+                    print(f"Problematic JSON (last 500 chars): {json_str[-500:]}")
+                    return create_empty_kg(context)
             
             # Add metadata
             return {
@@ -326,13 +350,17 @@ Be thorough - extract EVERY entity and relationship you can find. Return only va
                 'processed_at': datetime.now().isoformat(),
                 'metadata': {
                     'extraction_method': 'bedrock_claude',
-                    'model_id': BEDROCK_MODEL_ID
+                    'model_id': BEDROCK_MODEL_ID,
+                    'text_length': len(text)
                 }
             }
         else:
+            print("No JSON found in response")
             return create_empty_kg(context)
     except Exception as e:
         print(f"Error parsing entity extraction: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         return create_empty_kg(context)
 
 

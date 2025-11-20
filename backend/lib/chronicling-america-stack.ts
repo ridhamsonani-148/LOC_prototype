@@ -628,30 +628,30 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
     // Uncomment to automatically trigger pipeline after each deployment
 
-    const autoStartPipeline = new cr.AwsCustomResource(
-      this,
-      "AutoStartPipeline",
-      {
-        onCreate: {
-          service: "StepFunctions",
-          action: "startExecution",
-          parameters: {
-            stateMachineArn: stateMachine.stateMachineArn,
-            input: JSON.stringify({
-              start_date: "1815-08-01",
-              end_date: "1820-08-31",
-              max_pages: 30,
-            }),
-          },
-          physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
-        },
-        policy: cr.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            actions: ["states:StartExecution"],
-            resources: [stateMachine.stateMachineArn],
-          }),
-        ]),
-      }
-    );
+  //   const autoStartPipeline = new cr.AwsCustomResource(
+  //     this,
+  //     "AutoStartPipeline",
+  //     {
+  //       onCreate: {
+  //         service: "StepFunctions",
+  //         action: "startExecution",
+  //         parameters: {
+  //           stateMachineArn: stateMachine.stateMachineArn,
+  //           input: JSON.stringify({
+  //             start_date: "1815-08-01",
+  //             end_date: "1820-08-31",
+  //             max_pages: 30,
+  //           }),
+  //         },
+  //         physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
+  //       },
+  //       policy: cr.AwsCustomResourcePolicy.fromStatements([
+  //         new iam.PolicyStatement({
+  //           actions: ["states:StartExecution"],
+  //           resources: [stateMachine.stateMachineArn],
+  //         }),
+  //       ]),
+  //     }
+  //   );
   }
 }
