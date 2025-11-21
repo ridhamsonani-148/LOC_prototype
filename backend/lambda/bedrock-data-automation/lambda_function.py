@@ -225,7 +225,7 @@ class BedrockDataAutomationClient:
     
     def wait_for_completion(self,
                            invocation_arn: str,
-                           max_wait_seconds: int = 300,
+                           max_wait_seconds: int = 900,
                            poll_interval: int = 10) -> Dict[str, Any]:
         """
         Wait for Data Automation processing to complete
