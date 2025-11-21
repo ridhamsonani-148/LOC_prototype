@@ -1,6 +1,7 @@
 """
 Chat Handler Lambda Function
-Provides chat interface for querying Neptune knowledge graph
+Provides chat interface using Bedrock Knowledge Base with GraphRAG
+Queries documents stored in Neptune with automatic entity extraction
 """
 
 import json
@@ -8,17 +9,14 @@ import os
 import time
 import boto3
 from botocore.exceptions import ClientError
-from gremlin_python.driver import client, serializer
-from gremlin_python.driver.protocol import GremlinServerError
 
 bedrock_runtime = boto3.client('bedrock-runtime')
+bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
 
 NEPTUNE_ENDPOINT = os.environ['NEPTUNE_ENDPOINT']
 NEPTUNE_PORT = os.environ.get('NEPTUNE_PORT', '8182')
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
-
-# Global Neptune client (reused across invocations)
-neptune_client = None
+KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')  # Set this after creating KB
 
 def lambda_handler(event, context):
     """
@@ -63,15 +61,13 @@ def lambda_handler(event, context):
         
         print(f"Question: {question}")
         
-        # Generate query and answer in single Bedrock call
-        response = answer_question_single_call(question)
-        
-        gremlin_query = response['query']
-        answer = response['answer']
-        results = response['results']
-        
-        print(f"Generated query: {gremlin_query}")
-        print(f"Query results: {len(results)} items")
+        # Use Bedrock Knowledge Base for GraphRAG
+        if KNOWLEDGE_BASE_ID:
+            response = query_knowledge_base(question)
+        else:
+            # Fallback to direct Neptune query if KB not configured
+            print("WARNING: KNOWLEDGE_BASE_ID not set, using direct Neptune query")
+            response = answer_question_direct_neptune(question)
         
         return {
             'statusCode': 200,
@@ -81,14 +77,16 @@ def lambda_handler(event, context):
             },
             'body': json.dumps({
                 'question': question,
-                'answer': answer,
-                'query': gremlin_query,
-                'result_count': len(results)
+                'answer': response['answer'],
+                'sources': response.get('sources', []),
+                'entities': response.get('entities', [])
             })
         }
         
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             'statusCode': 500,
             'headers': {
@@ -142,135 +140,127 @@ def invoke_bedrock_with_retry(prompt: str, max_retries: int = 5) -> str:
     raise Exception("Max retries exceeded")
 
 
-def answer_question_single_call(question: str) -> dict:
-    """Answer question using Claude - generates query and executes it"""
+def query_knowledge_base(question: str) -> dict:
+    """
+    Query Bedrock Knowledge Base with GraphRAG
+    Automatically extracts entities and relationships from documents
+    """
+    print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
     
-    prompt = f"""You are a Neptune graph database expert for historical newspapers (1815-1820).
-
-User Question: {question}
-
-Graph Schema:
-Vertices (Nodes):
-- PERSON: name, confidence, context
-- LOCATION: name, confidence, type (city/state/country)
-- ORGANIZATION: name, confidence, type (business/government/military)
-- EVENT: name, date, description, confidence
-- NEWSPAPER: title, publication_date, location, publisher
-- ARTICLE: headline, summary, date, newspaper_id
-- ADVERTISEMENT: product, company, price, date
-
-Edges (Relationships):
-- MENTIONED_IN: Person/Location/Org → Article/Newspaper
-- LOCATED_IN: Person/Org/Event → Location
-- WORKS_FOR: Person → Organization
-- PARTICIPATED_IN: Person → Event
-- PUBLISHED_BY: Article → Newspaper
-- ADVERTISED_IN: Advertisement → Newspaper
-- RELATED_TO: Any → Any (general relationship)
-
-Common Query Patterns:
-
-1. List entities:
-   g.V().hasLabel('PERSON').values('name').dedup().limit(50)
-
-2. Find relationships:
-   g.V().hasLabel('PERSON').has('name', 'George Washington').out('MENTIONED_IN').values('title')
-
-3. Filter by property:
-   g.V().hasLabel('NEWSPAPER').has('publication_date', containing('1815')).valueMap()
-
-4. Count entities:
-   g.V().hasLabel('LOCATION').count()
-
-5. Complex traversal:
-   g.V().hasLabel('PERSON').out('LOCATED_IN').has('name', containing('Providence')).in('LOCATED_IN').values('name').dedup()
-
-6. Get full details:
-   g.V().hasLabel('EVENT').valueMap(true).limit(10)
-
-7. Find connections:
-   g.V().has('name', 'Aaron Burr').both().values('name').dedup()
-
-Now generate a Gremlin query for: {question}
-
-Return ONLY the Gremlin query, no explanation, no markdown, no code blocks."""
-    
-    # Get query from Bedrock
-    query = invoke_bedrock_with_retry(prompt)
-    
-    # Clean up query
-    query = query.replace('```', '').replace('gremlin', '').replace('```python', '').strip()
-    
-    print(f"Generated query: {query}")
-    
-    # Execute query on Neptune
-    results = execute_neptune_query(query)
-    
-    print(f"Query returned {len(results)} results")
-    
-    # Format answer based on results using Claude
-    answer = format_answer_from_results(question, results)
-    
-    return {
-        'query': query,
-        'answer': answer,
-        'results': results
-    }
-
-
-def format_answer_from_results(question: str, results: list) -> str:
-    """Format answer from query results using Claude - NO hardcoded conditions"""
-    
-    if not results:
-        return "I couldn't find any information about that in the historical newspapers."
-    
-    # Let Claude format the answer naturally based on the question and results
-    # Limit results to avoid token limits
-    results_sample = results[:50] if len(results) > 50 else results
-    
-    prompt = f"""You are a helpful assistant answering questions about historical newspapers from 1815-1820.
-
-User Question: {question}
-
-Query Results: {json.dumps(results_sample, indent=2)}
-
-Total Results: {len(results)}
-
-Instructions:
-1. Answer the user's question naturally and conversationally
-2. Use the query results to provide specific information
-3. If there are many results, summarize the key findings
-4. Be concise but informative
-5. Don't mention "query results" or technical details
-6. If results are empty or unclear, say you couldn't find that information
-
-Provide a natural, helpful answer:"""
-    
-    return invoke_bedrock_with_retry(prompt)
-
-
-def execute_neptune_query(query: str) -> list:
-    """Execute Gremlin query on Neptune"""
-    global neptune_client
-    
-    # Connect if not already connected
-    if neptune_client is None:
-        connection_url = f'wss://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin'
-        print(f"Connecting to Neptune: {connection_url}")
-        
-        neptune_client = client.Client(
-            connection_url,
-            'g',
-            message_serializer=serializer.GraphSONSerializersV2d0()
-        )
-    
-    # Execute query
     try:
-        result = neptune_client.submit(query).all().result()
-        return result
-    except GremlinServerError as e:
-        print(f"Gremlin error: {e}")
-        return []
+        response = bedrock_agent_runtime.retrieve_and_generate(
+            input={
+                'text': question
+            },
+            retrieveAndGenerateConfiguration={
+                'type': 'KNOWLEDGE_BASE',
+                'knowledgeBaseConfiguration': {
+                    'knowledgeBaseId': KNOWLEDGE_BASE_ID,
+                    'modelArn': f'arn:aws:bedrock:{os.environ.get("AWS_REGION", "us-east-1")}::foundation-model/{BEDROCK_MODEL_ID}',
+                    'retrievalConfiguration': {
+                        'vectorSearchConfiguration': {
+                            'numberOfResults': 10
+                        }
+                    }
+                }
+            }
+        )
+        
+        # Extract answer and sources
+        answer = response['output']['text']
+        
+        # Extract sources (documents that were retrieved)
+        sources = []
+        if 'citations' in response:
+            for citation in response['citations']:
+                for reference in citation.get('retrievedReferences', []):
+                    sources.append({
+                        'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
+                        'content': reference.get('content', {}).get('text', '')[:200] + '...'
+                    })
+        
+        # Extract entities (if available in response metadata)
+        entities = []
+        if 'metadata' in response:
+            entities = response['metadata'].get('entities', [])
+        
+        print(f"Answer generated with {len(sources)} sources")
+        
+        return {
+            'answer': answer,
+            'sources': sources,
+            'entities': entities
+        }
+        
+    except Exception as e:
+        print(f"Error querying Knowledge Base: {e}")
+        # Fallback to direct answer
+        return {
+            'answer': f"I encountered an error querying the knowledge base: {str(e)}",
+            'sources': [],
+            'entities': []
+        }
+
+
+def answer_question_direct_neptune(question: str) -> dict:
+    """
+    Fallback: Direct Neptune query without Knowledge Base
+    Used when KNOWLEDGE_BASE_ID is not configured
+    """
+    from gremlin_python.driver import client, serializer
+    
+    # Connect to Neptune
+    connection_url = f'wss://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin'
+    print(f"Connecting to Neptune: {connection_url}")
+    
+    neptune_client = client.Client(
+        connection_url,
+        'g',
+        message_serializer=serializer.GraphSONSerializersV2d0()
+    )
+    
+    # Simple query to get documents
+    query = "g.V().hasLabel('Document').limit(10).valueMap(true)"
+    
+    try:
+        results = neptune_client.submit(query).all().result()
+        
+        # Format results for answer
+        documents = []
+        for result in results:
+            if isinstance(result, dict):
+                doc_text = result.get('document_text', [''])[0] if 'document_text' in result else ''
+                documents.append(doc_text[:500])  # First 500 chars
+        
+        # Use Claude to answer based on documents
+        if documents:
+            prompt = f"""Based on these historical newspaper documents from 1815-1820:
+
+{chr(10).join(documents)}
+
+Answer this question: {question}
+
+Provide a helpful, concise answer based on the documents."""
+            
+            answer = invoke_bedrock_with_retry(prompt)
+        else:
+            answer = "No documents found in the database. Please run the pipeline to load documents first."
+        
+        neptune_client.close()
+        
+        return {
+            'answer': answer,
+            'sources': [{'document_id': f'doc_{i}', 'content': doc[:200]} for i, doc in enumerate(documents)],
+            'entities': []
+        }
+        
+    except Exception as e:
+        print(f"Error querying Neptune: {e}")
+        return {
+            'answer': f"Error querying database: {str(e)}",
+            'sources': [],
+            'entities': []
+        }
 
 
 

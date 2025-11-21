@@ -1,218 +1,84 @@
-# Chronicling America Pipeline - Deployment Guide
+# Deployment Guide - Fully Automated GraphRAG Pipeline
 
-Complete guide for deploying the historical newspaper data extraction pipeline to AWS.
+## Overview
 
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Quick Start](#quick-start)
-3. [Deployment Methods](#deployment-methods)
-4. [Architecture Overview](#architecture-overview)
-5. [Pipeline Execution](#pipeline-execution)
-6. [Monitoring](#monitoring)
-7. [Troubleshooting](#troubleshooting)
-8. [Cost Estimation](#cost-estimation)
+This guide shows how to deploy the complete end-to-end pipeline with **automatic Bedrock Knowledge Base creation**. No manual configuration needed!
 
 ## Prerequisites
 
-### AWS Account Setup
+- AWS Account with appropriate permissions
+- AWS CLI configured
+- Node.js 20+ installed
+- Docker installed (for Lambda container images)
 
-1. **AWS Account** with appropriate permissions
-2. **AWS CLI** installed and configured
-   ```bash
-   aws configure
-   ```
-3. **Bedrock Model Access**
-   - Go to AWS Console → Bedrock → Model access
-   - Request access to Claude 3.5 Sonnet v2
-   - Wait for approval (usually instant)
-
-### Local Development Tools
-
-- **Node.js 18+** and npm
-- **AWS CDK CLI**
-  ```bash
-  npm install -g aws-cdk@2.161.1
-  ```
-- **Docker** (for building Lambda container images)
-- **Git** for cloning the repository
-
-### IAM Permissions Required
-
-Your AWS user/role needs:
-- CloudFormation full access
-- Lambda full access
-- S3 full access
-- EC2 (for VPC)
-- Neptune full access
-- Bedrock InvokeModel
-- IAM role creation
-- API Gateway
-- Step Functions
-- CloudWatch Logs
-
-## Quick Start
-
-### Option 1: Automated Deployment (Recommended)
+## One-Command Deployment
 
 ```bash
 cd backend
-chmod +x deploy.sh
 ./deploy.sh
 ```
 
-Follow the prompts:
-- **GitHub URL**: Your forked repository URL
-- **Project Name**: `chronicling-america-pipeline` (or custom)
-- **AWS Region**: `us-west-2` (or your preferred region)
-- **Action**: `deploy`
+That's it! This single command:
+1. ✅ Installs dependencies
+2. ✅ Builds TypeScript code
+3. ✅ Builds Docker images for Lambda functions
+4. ✅ Creates VPC and Neptune cluster
+5. ✅ Creates all Lambda functions
+6. ✅ Creates Step Functions pipeline
+7. ✅ **Creates Bedrock Knowledge Base automatically**
+8. ✅ **Configures Knowledge Base with Neptune**
+9. ✅ Creates API Gateway
+10. ✅ Sets up all IAM roles and permissions
 
-The script will:
-1. Create IAM role for CodeBuild
-2. Create CodeBuild project
-3. Start automated deployment
-4. Deploy all infrastructure via CDK
+## What Gets Created
 
-**Deployment time**: ~20-30 minutes
+### Infrastructure
+- **VPC**: 2 AZs with public, private, and isolated subnets
+- **Neptune**: Graph database cluster with 1 instance (db.t3.medium)
+- **S3 Bucket**: For storing images, PDFs, and extracted data
 
-### Option 2: Manual CDK Deployment
+### Lambda Functions
+1. **image-collector**: Fetches newspaper images from LOC API
+2. **image-to-pdf**: Converts images to PDF format
+3. **bedrock-data-automation**: Extracts text using Bedrock
+4. **neptune-loader**: Loads documents to Neptune
+5. **chat-handler**: Handles chat queries via Bedrock KB
 
-```bash
-cd backend
+### Bedrock Knowledge Base (Automatic!)
+- **Name**: `chronicling-america-pipeline-knowledge-base`
+- **Type**: Vector with Neptune storage
+- **Embeddings**: Amazon Titan Embed Text v2
+- **Configuration**:
+  - Vertex Label: `Document`
+  - Text Field: `document_text`
+  - Metadata: `title`, `publication_date`, `page_number`
+  - Chunking: Fixed size (1000 tokens, 20% overlap)
 
-# Install dependencies
-npm install
+### API Gateway
+- **Endpoint**: `/chat` (POST) - Chat interface
+- **Endpoint**: `/health` (GET) - Health check
 
-# Bootstrap CDK (first time only)
-cdk bootstrap
+## Post-Deployment Steps
 
-# Deploy the stack
-cdk deploy ChroniclingAmericaStack \
-  --context projectName=chronicling-america-pipeline \
-  --context dataBucketName=my-data-bucket \
-  --context bedrockModelId=anthropic.claude-3-5-sonnet-20241022-v2:0
-```
-
-## Deployment Methods
-
-### Method 1: AWS CodeBuild (Automated)
-
-**Best for**: Production deployments, CI/CD pipelines
-
-```bash
-./deploy.sh
-```
-
-**Advantages**:
-- Fully automated
-- Consistent environment
-- Build logs in CloudWatch
-- No local Docker required
-
-**Process**:
-1. Creates CodeBuild project
-2. Clones repository
-3. Builds Docker images
-4. Deploys CDK stack
-5. Outputs deployment info
-
-### Method 2: AWS CloudShell
-
-**Best for**: Quick deployments without local setup
-
-1. Open AWS CloudShell in AWS Console
-2. Clone repository:
-   ```bash
-   git clone https://github.com/YOUR-USERNAME/YOUR-REPO.git
-   cd YOUR-REPO/backend
-   ```
-3. Run deployment:
-   ```bash
-   chmod +x deploy.sh
-   ./deploy.sh
-   ```
-
-### Method 3: Local CDK Deployment
-
-**Best for**: Development, testing, customization
+### 1. Get Stack Outputs
 
 ```bash
-cd backend
-npm install
-npm run build
-cdk deploy --all
+aws cloudformation describe-stacks \
+  --stack-name ChroniclingAmericaStack \
+  --query 'Stacks[0].Outputs'
 ```
 
-## Architecture Overview
+**Key Outputs:**
+- `StateMachineArn`: Step Functions ARN
+- `KnowledgeBaseId`: Bedrock KB ID (auto-created!)
+- `KnowledgeBaseDataSourceId`: Data source ID
+- `ChatEndpoint`: API endpoint for chat
+- `NeptuneEndpoint`: Neptune cluster endpoint
 
-### Components Deployed
-
-1. **S3 Bucket** (`${project}-data-${account}-${region}`)
-   - Stores images, extracted data, knowledge graphs
-   - Lifecycle policy: 90-day retention
-
-2. **VPC** (2 AZs)
-   - Public subnets (NAT Gateway)
-   - Private subnets (Lambda functions)
-   - Isolated subnets (Neptune)
-
-3. **Neptune Cluster**
-   - Instance type: db.t3.medium
-   - Storage: Encrypted
-   - Port: 8182
-
-4. **Lambda Functions** (Docker-based)
-   - Image Collector (15 min timeout, 1GB memory)
-   - Data Extractor (15 min timeout, 2GB memory)
-   - Entity Extractor (15 min timeout, 2GB memory)
-   - Neptune Loader (15 min timeout, 1GB memory)
-   - Chat Handler (30 sec timeout, 1GB memory)
-
-5. **Step Functions State Machine**
-   - Orchestrates pipeline workflow
-   - 2-hour timeout
-   - CloudWatch Logs enabled
-
-6. **API Gateway**
-   - REST API for chat interface
-   - CORS enabled
-   - Endpoints: `/chat` (POST), `/health` (GET)
-
-### Data Flow
-
-```
-1. Image Collector Lambda
-   ↓ Fetches from Chronicling America API
-   ↓ Saves to S3: images/
-
-2. Data Extractor Lambda
-   ↓ Downloads images
-   ↓ Extracts data with Bedrock
-   ↓ Saves to S3: extracted/
-
-3. Entity Extractor Lambda
-   ↓ Reads extracted data
-   ↓ Extracts entities/relationships with Bedrock
-   ↓ Saves to S3: knowledge_graphs/
-
-4. Neptune Loader Lambda
-   ↓ Reads knowledge graphs
-   ↓ Loads into Neptune via Gremlin
-
-5. Chat Handler Lambda
-   ↓ Receives questions via API Gateway
-   ↓ Queries Neptune
-   ↓ Generates answers with Bedrock
-```
-
-## Pipeline Execution
-
-### Start Pipeline
-
-After deployment, get the State Machine ARN from outputs:
+### 2. Run Pipeline to Load Documents
 
 ```bash
-# From CDK outputs
+# Get State Machine ARN
 STATE_MACHINE_ARN=$(aws cloudformation describe-stacks \
   --stack-name ChroniclingAmericaStack \
   --query 'Stacks[0].Outputs[?OutputKey==`StateMachineArn`].OutputValue' \
@@ -228,227 +94,213 @@ aws stepfunctions start-execution \
   }'
 ```
 
-### Input Parameters
+**Monitor Progress:**
+- AWS Console → Step Functions → Select execution
+- Watch each step complete: Image Collection → PDF Conversion → Text Extraction → Neptune Loading
 
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `start_date` | Start date for newspaper search | `"1815-08-01"` |
-| `end_date` | End date for newspaper search | `"1815-08-31"` |
-| `max_pages` | Maximum API pages to fetch | `10` |
+### 3. Sync Knowledge Base (Trigger Entity Extraction)
 
-### Monitor Execution
+After documents are loaded to Neptune, sync the Knowledge Base to extract entities:
 
-1. **Step Functions Console**
-   - Go to AWS Console → Step Functions
-   - Select state machine
-   - View execution graph and logs
-
-2. **CloudWatch Logs**
-   - Log groups: `/aws/lambda/${project}-*`
-   - View Lambda execution logs
-
-3. **S3 Bucket**
-   - Check `images/`, `extracted/`, `knowledge_graphs/` folders
-   - Verify data is being created
-
-## Monitoring
-
-### CloudWatch Dashboards
-
-Create custom dashboard:
 ```bash
-aws cloudwatch put-dashboard \
-  --dashboard-name chronicling-america-pipeline \
-  --dashboard-body file://dashboard.json
+# Get Knowledge Base and Data Source IDs
+KB_ID=$(aws cloudformation describe-stacks \
+  --stack-name ChroniclingAmericaStack \
+  --query 'Stacks[0].Outputs[?OutputKey==`KnowledgeBaseId`].OutputValue' \
+  --output text)
+
+DS_ID=$(aws cloudformation describe-stacks \
+  --stack-name ChroniclingAmericaStack \
+  --query 'Stacks[0].Outputs[?OutputKey==`KnowledgeBaseDataSourceId`].OutputValue' \
+  --output text)
+
+# Start ingestion job (entity extraction)
+aws bedrock-agent start-ingestion-job \
+  --knowledge-base-id $KB_ID \
+  --data-source-id $DS_ID
 ```
 
-### Key Metrics
+**Monitor Sync:**
+```bash
+# Check ingestion job status
+aws bedrock-agent list-ingestion-jobs \
+  --knowledge-base-id $KB_ID \
+  --data-source-id $DS_ID
+```
 
-- **Lambda Invocations**: Count of function executions
-- **Lambda Duration**: Execution time
-- **Lambda Errors**: Failed invocations
-- **Step Functions Executions**: Pipeline runs
-- **Neptune Connections**: Active connections
-- **API Gateway Requests**: Chat API usage
+Or use AWS Console:
+- Go to Amazon Bedrock → Knowledge Bases
+- Select your knowledge base
+- Click "Sync" button
+- Wait for completion (usually 5-15 minutes)
 
-### Alarms
+### 4. Test the System
 
-Set up alarms for:
-- Lambda errors > 5 in 5 minutes
-- Step Functions failed executions
-- Neptune CPU > 80%
-- API Gateway 5xx errors
+```bash
+# Get API endpoint
+API_URL=$(aws cloudformation describe-stacks \
+  --stack-name ChroniclingAmericaStack \
+  --query 'Stacks[0].Outputs[?OutputKey==`ChatEndpoint`].OutputValue' \
+  --output text)
+
+# Test health check
+curl $API_URL/../health
+
+# Test chat query
+curl -X POST $API_URL \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What people were mentioned in Providence newspapers in 1815?"
+  }'
+```
+
+**Expected Response:**
+```json
+{
+  "question": "What people were mentioned in Providence newspapers in 1815?",
+  "answer": "Based on the historical newspapers from 1815, several people were mentioned in Providence...",
+  "sources": [
+    {
+      "document_id": "...",
+      "content": "..."
+    }
+  ],
+  "entities": [
+    {
+      "type": "PERSON",
+      "name": "John Smith",
+      "confidence": 0.95
+    }
+  ]
+}
+```
+
+## Verification Steps
+
+### Check Neptune Documents
+
+```bash
+# Connect to Neptune (requires VPN or bastion host)
+# Or use Neptune Workbench in AWS Console
+
+# Query to check documents
+g.V().hasLabel('Document').count()
+g.V().hasLabel('Document').limit(1).valueMap(true)
+```
+
+### Check Knowledge Base Status
+
+```bash
+# Get Knowledge Base details
+aws bedrock-agent get-knowledge-base \
+  --knowledge-base-id $KB_ID
+
+# Check data source status
+aws bedrock-agent get-data-source \
+  --knowledge-base-id $KB_ID \
+  --data-source-id $DS_ID
+```
+
+### Check Lambda Logs
+
+```bash
+# Chat handler logs
+aws logs tail /aws/lambda/chronicling-america-pipeline-chat-handler --follow
+
+# Neptune loader logs
+aws logs tail /aws/lambda/chronicling-america-pipeline-neptune-loader --follow
+```
 
 ## Troubleshooting
 
-### Common Issues
+### Knowledge Base Not Created
 
-#### 1. Lambda Timeout
-
-**Error**: Task timed out after 15 minutes
-
-**Solution**: 
-- Reduce `max_pages` in input
-- Process in smaller batches
-- Increase Lambda timeout in CDK stack
-
-#### 2. Bedrock Access Denied
-
-**Error**: AccessDeniedException when invoking model
-
-**Solution**:
-- Enable model access in Bedrock console
-- Check IAM permissions for `bedrock:InvokeModel`
-- Verify model ID is correct
-
-#### 3. Neptune Connection Failed
-
-**Error**: Cannot connect to Neptune
-
-**Solution**:
-- Verify Lambda is in correct VPC
-- Check security group rules
-- Ensure Neptune is in same VPC
-- Wait for Neptune cluster to be available
-
-#### 4. Docker Build Failed
-
-**Error**: Cannot build Lambda Docker image
-
-**Solution**:
-- Ensure Docker is running
-- Check Dockerfile syntax
-- Verify requirements.txt dependencies
-- Enable privileged mode in CodeBuild
-
-#### 5. S3 Access Denied
-
-**Error**: Access denied when writing to S3
-
-**Solution**:
-- Check Lambda execution role permissions
-- Verify bucket name is correct
-- Ensure bucket exists in same region
-
-### Debug Commands
-
+**Check CloudFormation:**
 ```bash
-# Check Lambda logs
-aws logs tail /aws/lambda/chronicling-america-pipeline-image-collector --follow
-
-# Check Step Functions execution
-aws stepfunctions describe-execution \
-  --execution-arn <EXECUTION_ARN>
-
-# Check Neptune status
-aws neptune describe-db-clusters \
-  --db-cluster-identifier chronicling-america-pipeline-neptune-cluster
-
-# Test API Gateway
-curl -X POST https://YOUR-API-ID.execute-api.us-west-2.amazonaws.com/prod/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"Who are the people mentioned?"}'
+aws cloudformation describe-stack-events \
+  --stack-name ChroniclingAmericaStack \
+  --query 'StackEvents[?ResourceType==`AWS::Bedrock::KnowledgeBase`]'
 ```
+
+**Common Issues:**
+- Bedrock service not available in region (use us-east-1 or us-west-2)
+- IAM permissions missing for Bedrock
+- VPC configuration issues
+
+### Chat Returns Empty Results
+
+**Possible Causes:**
+1. Knowledge Base not synced yet
+2. No documents in Neptune
+3. Wrong vertex label or text field
+
+**Fix:**
+```bash
+# Re-sync Knowledge Base
+aws bedrock-agent start-ingestion-job \
+  --knowledge-base-id $KB_ID \
+  --data-source-id $DS_ID
+
+# Check Neptune documents
+# Use Neptune Workbench or query from Lambda
+```
+
+### Pipeline Fails
+
+**Check Step Functions:**
+- AWS Console → Step Functions → Select execution
+- Look for failed step
+- Check Lambda logs for that step
+
+**Common Issues:**
+- Lambda timeout (increase in CDK)
+- Memory limit (increase in CDK)
+- Bedrock throttling (add retry logic)
 
 ## Cost Estimation
 
-### Monthly Costs (100 newspapers/month)
+### Monthly Costs (Approximate)
 
-| Service | Usage | Cost |
-|---------|-------|------|
-| **Lambda** | 5 functions × 20 invocations | ~$0.50 |
-| **Bedrock** | 100 images + 100 entity extractions | ~$2.40 |
-| **Neptune** | db.t3.medium, 730 hours | ~$73.00 |
-| **S3** | 1GB storage, 1000 requests | ~$0.05 |
-| **Step Functions** | 20 executions | ~$0.50 |
-| **API Gateway** | 1000 requests | ~$0.01 |
-| **VPC** | NAT Gateway, 730 hours | ~$32.00 |
-| **CloudWatch** | Logs, 1GB | ~$0.50 |
-| **Total** | | **~$109/month** |
+**For 1000 documents:**
+- Neptune db.t3.medium: ~$100/month
+- Lambda executions: ~$5/month
+- Bedrock Knowledge Base: ~$10/month
+- Bedrock model invocations: ~$20/month
+- S3 storage: ~$1/month
+- **Total: ~$136/month**
 
-### Cost Optimization
-
-1. **Use Neptune Serverless** (when available)
-   - Pay per query instead of per hour
-   - Estimated savings: 50-70%
-
-2. **Stop Neptune when not in use**
-   ```bash
-   aws neptune stop-db-cluster \
-     --db-cluster-identifier chronicling-america-pipeline-neptune-cluster
-   ```
-
-3. **Use cheaper Bedrock model**
-   - Claude 3 Haiku: 90% cheaper
-   - Trade-off: Lower accuracy
-
-4. **Reduce Lambda memory**
-   - Test with 512MB instead of 2GB
-   - Adjust based on performance
-
-5. **Use S3 Intelligent-Tiering**
-   - Automatically moves data to cheaper storage
-
-## Next Steps
-
-1. **Test the Pipeline**
-   ```bash
-   # Start with small dataset
-   aws stepfunctions start-execution \
-     --state-machine-arn $STATE_MACHINE_ARN \
-     --input '{"start_date":"1815-08-01","end_date":"1815-08-01","max_pages":1}'
-   ```
-
-2. **Query Neptune**
-   ```bash
-   curl -X POST $CHAT_ENDPOINT \
-     -H 'Content-Type: application/json' \
-     -d '{"question":"What newspapers are in the database?"}'
-   ```
-
-3. **Build Frontend**
-   - Create React app
-   - Connect to API Gateway
-   - Display chat interface
-
-4. **Customize Extraction**
-   - Modify Lambda function prompts
-   - Add custom entity types
-   - Adjust confidence thresholds
-
-5. **Scale Up**
-   - Process larger date ranges
-   - Increase `max_pages`
-   - Add more Lambda concurrency
-
-## Support
-
-For issues:
-1. Check CloudWatch Logs
-2. Review Step Functions execution graph
-3. Verify IAM permissions
-4. Test individual Lambda functions
-5. Check AWS service quotas
+**For 10,000 documents:**
+- Neptune db.t3.medium: ~$100/month
+- Lambda executions: ~$15/month
+- Bedrock Knowledge Base: ~$50/month
+- Bedrock model invocations: ~$100/month
+- S3 storage: ~$5/month
+- **Total: ~$270/month**
 
 ## Cleanup
 
-To destroy all resources:
+To delete all resources:
 
 ```bash
-./deploy.sh
-# Choose "destroy" when prompted
-
-# Or manually:
-cdk destroy ChroniclingAmericaStack --force
+cd backend
+cdk destroy
 ```
 
-**Note**: S3 bucket is retained by default. Delete manually if needed:
+**Note:** S3 bucket is retained by default. Delete manually if needed:
 ```bash
-aws s3 rb s3://YOUR-BUCKET-NAME --force
+aws s3 rb s3://chronicling-america-pipeline-data-<account>-<region> --force
 ```
 
----
+## Next Steps
 
-**Deployment complete!** 🎉
+1. **Scale Up**: Increase `max_pages` in pipeline input
+2. **Add More Data**: Run pipeline with different date ranges
+3. **Customize Entities**: Modify Knowledge Base entity types
+4. **Build UI**: Create web interface using the chat API
+5. **Add Analytics**: Query Neptune for insights
 
-Monitor your pipeline in the AWS Console and start extracting historical newspaper data.
+## Support
+
+- [AWS Bedrock Documentation](https://docs.aws.amazon.com/bedrock/)
+- [Neptune Documentation](https://docs.aws.amazon.com/neptune/)
+- [CDK Documentation](https://docs.aws.amazon.com/cdk/)
