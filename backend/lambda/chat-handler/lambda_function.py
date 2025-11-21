@@ -147,6 +147,9 @@ def query_knowledge_base(question: str) -> dict:
     """
     print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
     
+    # AWS_REGION is automatically available in Lambda environment
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    
     try:
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
@@ -156,7 +159,7 @@ def query_knowledge_base(question: str) -> dict:
                 'type': 'KNOWLEDGE_BASE',
                 'knowledgeBaseConfiguration': {
                     'knowledgeBaseId': KNOWLEDGE_BASE_ID,
-                    'modelArn': f'arn:aws:bedrock:{os.environ.get("AWS_REGION", "us-east-1")}::foundation-model/{BEDROCK_MODEL_ID}',
+                    'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}',
                     'retrievalConfiguration': {
                         'vectorSearchConfiguration': {
                             'numberOfResults': 10

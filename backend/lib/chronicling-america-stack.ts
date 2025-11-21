@@ -622,8 +622,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
           NEPTUNE_PORT: "8182",
           BEDROCK_MODEL_ID: bedrockModelId,
-          KNOWLEDGE_BASE_ID: knowledgeBase.ref, // Automatically set from CDK
-          AWS_REGION: this.region,
+          KNOWLEDGE_BASE_ID: "", // Set this after creating Bedrock Knowledge Base
         },
         logGroup: chatHandlerLogGroup,
       }
