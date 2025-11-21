@@ -8,7 +8,6 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as stepfunctions from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -152,168 +151,21 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     neptuneInstance.addDependency(neptuneCluster);
 
     // ========================================
-    // Bedrock Knowledge Base
+    // Bedrock Knowledge Base - MANUAL SETUP REQUIRED
     // ========================================
-    
-    // IAM Role for Bedrock Knowledge Base
-    const knowledgeBaseRole = new iam.Role(this, "KnowledgeBaseRole", {
-      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
-      description: "Role for Bedrock Knowledge Base to access Neptune",
-    });
-
-    // Grant Neptune access to Knowledge Base role
-    knowledgeBaseRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["neptune-db:*"],
-        resources: ["*"],
-      })
-    );
-
-    // Grant EC2 permissions for VPC access
-    knowledgeBaseRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "ec2:CreateNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DeleteNetworkInterface",
-          "ec2:DescribeVpcs",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeSecurityGroups",
-        ],
-        resources: ["*"],
-      })
-    );
-
-    // Grant Bedrock model invocation
-    knowledgeBaseRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["bedrock:InvokeModel"],
-        resources: [
-          `arn:aws:bedrock:${this.region}::foundation-model/*`,
-        ],
-      })
-    );
-
-    // Create Bedrock Knowledge Base using CloudFormation
-    const knowledgeBase = new cdk.CfnResource(this, "BedrockKnowledgeBase", {
-      type: "AWS::Bedrock::KnowledgeBase",
-      properties: {
-        Name: `${projectName}-knowledge-base`,
-        Description: "Knowledge base for historical newspapers (1815-1820) with automatic entity extraction",
-        RoleArn: knowledgeBaseRole.roleArn,
-        KnowledgeBaseConfiguration: {
-          Type: "VECTOR",
-          VectorKnowledgeBaseConfiguration: {
-            EmbeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-          },
-        },
-        StorageConfiguration: {
-          Type: "NEPTUNE",
-          NeptuneConfiguration: {
-            Endpoint: neptuneCluster.attrEndpoint,
-            Port: 8182,
-            VpcConfiguration: {
-              SubnetIds: vpc.privateSubnets.map((subnet) => subnet.subnetId),
-              SecurityGroupIds: [neptuneSecurityGroup.securityGroupId],
-            },
-            // Graph configuration for document storage
-            GraphIdentifier: neptuneCluster.dbClusterIdentifier || `${projectName}-neptune-cluster`,
-            // Specify vertex label and text field
-            MappingConfiguration: {
-              VertexLabel: "Document",
-              TextField: "document_text",
-              MetadataFields: ["title", "publication_date", "page_number", "loaded_at"],
-            },
-          },
-        },
-      },
-    });
-
-    knowledgeBase.addDependency(neptuneInstance);
-
-    // Create Data Source for the Knowledge Base
-    const knowledgeBaseDataSource = new cdk.CfnResource(
-      this,
-      "BedrockKnowledgeBaseDataSource",
-      {
-        type: "AWS::Bedrock::DataSource",
-        properties: {
-          Name: `${projectName}-neptune-datasource`,
-          Description: "Neptune data source for historical newspapers",
-          KnowledgeBaseId: knowledgeBase.ref,
-          DataSourceConfiguration: {
-            Type: "NEPTUNE",
-            NeptuneConfiguration: {
-              Endpoint: neptuneCluster.attrEndpoint,
-              Port: 8182,
-              VpcConfiguration: {
-                SubnetIds: vpc.privateSubnets.map((subnet) => subnet.subnetId),
-                SecurityGroupIds: [neptuneSecurityGroup.securityGroupId],
-              },
-            },
-          },
-          VectorIngestionConfiguration: {
-            ChunkingConfiguration: {
-              ChunkingStrategy: "FIXED_SIZE",
-              FixedSizeChunkingConfiguration: {
-                MaxTokens: 1000,
-                OverlapPercentage: 20,
-              },
-            },
-          },
-        },
-      }
-    );
-
-    knowledgeBaseDataSource.addDependency(knowledgeBase);
-
-    // Custom Resource to trigger Knowledge Base sync after documents are loaded
-    // Note: This will be triggered on stack creation/update
-    // You'll need to manually sync after loading new documents
-    const kbSyncRole = new iam.Role(this, "KBSyncRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AWSLambdaBasicExecutionRole"
-        ),
-      ],
-    });
-
-    kbSyncRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock:StartIngestionJob",
-          "bedrock:GetIngestionJob",
-          "bedrock:ListIngestionJobs",
-        ],
-        resources: ["*"],
-      })
-    );
-
-    // Note: Uncomment this after first pipeline run to enable auto-sync
-    // const autoSyncKB = new cr.AwsCustomResource(this, "AutoSyncKB", {
-    //   onCreate: {
-    //     service: "Bedrock",
-    //     action: "startIngestionJob",
-    //     parameters: {
-    //       knowledgeBaseId: knowledgeBase.ref,
-    //       dataSourceId: knowledgeBaseDataSource.ref,
-    //     },
-    //     physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
-    //   },
-    //   policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-    //     resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-    //   }),
-    //   role: kbSyncRole,
-    // });
+    // NOTE: Neptune as a data source for Bedrock Knowledge Base is not yet
+    // supported via CloudFormation. You must create the Knowledge Base manually
+    // in the AWS Console after deployment.
+    //
+    // Steps:
+    // 1. Go to AWS Console → Bedrock → Knowledge Bases → Create
+    // 2. Configure with Neptune as data source
+    // 3. Set vertex label: "Document", text field: "document_text"
+    // 4. Update chat-handler Lambda with KNOWLEDGE_BASE_ID environment variable
 
     // ========================================
     // Lambda Execution Role
-    // ======================
+    // ========================================
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [
@@ -632,10 +484,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     lambdaRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock:Retrieve",
-          "bedrock:RetrieveAndGenerate",
-        ],
+        actions: ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
         resources: ["*"],
       })
     );
@@ -754,20 +603,10 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Chat endpoint URL",
     });
 
-    new cdk.CfnOutput(this, "KnowledgeBaseId", {
-      value: knowledgeBase.ref,
-      description: "Bedrock Knowledge Base ID (automatically created)",
-      exportName: `${projectName}-knowledge-base-id`,
-    });
-
-    new cdk.CfnOutput(this, "KnowledgeBaseDataSourceId", {
-      value: knowledgeBaseDataSource.ref,
-      description: "Bedrock Knowledge Base Data Source ID",
-    });
-
-    new cdk.CfnOutput(this, "NextSteps", {
-      value: "Run pipeline to load documents, then sync Knowledge Base in AWS Console",
-      description: "After deployment: 1) Run Step Functions pipeline, 2) Go to Bedrock Console and sync the Knowledge Base",
+    new cdk.CfnOutput(this, "BedrockKnowledgeBaseSetup", {
+      value: "MANUAL_SETUP_REQUIRED",
+      description:
+        "After deployment: 1) Run pipeline to load documents to Neptune, 2) Create Bedrock Knowledge Base manually in AWS Console (Neptune data source not yet supported in CloudFormation), 3) Update chat-handler Lambda with KNOWLEDGE_BASE_ID",
     });
 
     // ========================================
@@ -775,30 +614,30 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
     // Uncomment to automatically trigger pipeline after each deployment
 
-  //   const autoStartPipeline = new cr.AwsCustomResource(
-  //     this,
-  //     "AutoStartPipeline",
-  //     {
-  //       onCreate: {
-  //         service: "StepFunctions",
-  //         action: "startExecution",
-  //         parameters: {
-  //           stateMachineArn: stateMachine.stateMachineArn,
-  //           input: JSON.stringify({
-  //             start_date: "1815-08-01",
-  //             end_date: "1820-08-31",
-  //             max_pages: 30,
-  //           }),
-  //         },
-  //         physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
-  //       },
-  //       policy: cr.AwsCustomResourcePolicy.fromStatements([
-  //         new iam.PolicyStatement({
-  //           actions: ["states:StartExecution"],
-  //           resources: [stateMachine.stateMachineArn],
-  //         }),
-  //       ]),
-  //     }
-  //   );
+    //   const autoStartPipeline = new cr.AwsCustomResource(
+    //     this,
+    //     "AutoStartPipeline",
+    //     {
+    //       onCreate: {
+    //         service: "StepFunctions",
+    //         action: "startExecution",
+    //         parameters: {
+    //           stateMachineArn: stateMachine.stateMachineArn,
+    //           input: JSON.stringify({
+    //             start_date: "1815-08-01",
+    //             end_date: "1820-08-31",
+    //             max_pages: 30,
+    //           }),
+    //         },
+    //         physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
+    //       },
+    //       policy: cr.AwsCustomResourcePolicy.fromStatements([
+    //         new iam.PolicyStatement({
+    //           actions: ["states:StartExecution"],
+    //           resources: [stateMachine.stateMachineArn],
+    //         }),
+    //       ]),
+    //     }
+    //   );
   }
 }
