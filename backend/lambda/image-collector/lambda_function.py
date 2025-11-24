@@ -360,7 +360,8 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
         
         print(f"Found {len(formats)} format(s) for bill text")
         
-        # Try to find plain text format first
+        # Try to find best format: XML > TXT > PDF
+        xml_url = None
         text_url = None
         pdf_url = None
         
@@ -368,13 +369,28 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
             fmt_type = fmt.get('type', '').lower()
             fmt_url = fmt.get('url', '')
             
-            # Look for actual .txt files, not .htm
-            if ('text' in fmt_type or 'txt' in fmt_type) and fmt_url.endswith('.txt'):
+            # Prefer XML format (structured, easy to parse)
+            if 'xml' in fmt_type and fmt_url.endswith('.xml'):
+                xml_url = fmt_url
+                print(f"Found XML format: {xml_url}")
+                break
+            # Then plain text files
+            elif ('text' in fmt_type or 'txt' in fmt_type) and fmt_url.endswith('.txt'):
                 text_url = fmt_url
                 print(f"Found plain text format: {text_url}")
-                break
+            # Last resort: PDF
             elif 'pdf' in fmt_type:
                 pdf_url = fmt_url
+        
+        # Fetch XML if available (best option - structured data)
+        if xml_url:
+            print(f"Downloading XML from: {xml_url}")
+            xml_response = requests.get(xml_url, timeout=60)
+            xml_response.raise_for_status()
+            bill_text = extract_text_from_xml(xml_response.text)
+            if bill_text:
+                print(f"Extracted bill text from XML: {len(bill_text)} characters")
+                return bill_text
         
         # Fetch plain text if available
         if text_url:
@@ -391,10 +407,11 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
             print(f"Downloaded bill text: {len(bill_text)} characters")
             return bill_text
         
-        # If no plain text, note that PDF is available
+        # If only PDF available, note it for future BDA integration
         if pdf_url:
             print(f"Only PDF format available: {pdf_url}")
             print("PDF extraction not implemented yet - will use summary instead")
+            # TODO: Save PDF URL to metadata for future BDA processing
             return None
         
         print("No suitable text format found")
@@ -402,6 +419,25 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
         
     except Exception as e:
         print(f"Error fetching bill text: {e}")
+        return None
+
+
+def extract_text_from_xml(xml_content: str) -> str:
+    """
+    Extract text content from Congress bill XML format
+    The XML contains the full bill text in structured format
+    """
+    try:
+        import re
+        # Remove XML tags and extract text
+        # Congress XML has text in various tags, we'll extract all text content
+        text = re.sub(r'<[^>]+>', ' ', xml_content)
+        # Clean up whitespace
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        return text
+    except Exception as e:
+        print(f"Error extracting text from XML: {e}")
         return None
 
 
@@ -419,7 +455,10 @@ def convert_bill_to_document(bill: Dict) -> Dict:
         print(f"Bill keys: {list(bill.keys())[:10]}")  # Print first 10 keys
         
         congress = bill.get('congress', 'unknown')
+        # API returns 'type' in uppercase (e.g., 'HR'), convert to lowercase
         bill_type = bill.get('type', 'unknown')
+        if isinstance(bill_type, str):
+            bill_type = bill_type.lower()
         bill_number = bill.get('number', 'unknown')
         bill_id = f"{congress}-{bill_type}-{bill_number}"
         
@@ -459,8 +498,11 @@ def convert_bill_to_document(bill: Dict) -> Dict:
         
         # Sponsors
         sponsors = bill.get('sponsors', [])
-        if sponsors:
-            sponsor_names = [s.get('fullName', '') for s in sponsors if s.get('fullName')]
+        if sponsors and isinstance(sponsors, list):
+            sponsor_names = []
+            for s in sponsors:
+                if isinstance(s, dict) and s.get('fullName'):
+                    sponsor_names.append(s['fullName'])
             if sponsor_names:
                 text_parts.append(f"Sponsors: {', '.join(sponsor_names)}")
         
@@ -471,22 +513,31 @@ def convert_bill_to_document(bill: Dict) -> Dict:
         
         # Committees
         committees = bill.get('committees', [])
-        if committees:
-            committee_names = [c.get('name', '') for c in committees if c.get('name')]
+        if committees and isinstance(committees, list):
+            committee_names = []
+            for c in committees:
+                if isinstance(c, dict) and c.get('name'):
+                    committee_names.append(c['name'])
             if committee_names:
                 text_parts.append(f"Committees: {', '.join(committee_names)}")
         
         # Subjects/Policy Areas
         subjects_data = bill.get('subjects', {})
-        policy_area = subjects_data.get('policyArea', {}).get('name')
-        if policy_area:
-            text_parts.append(f"Policy Area: {policy_area}")
-        
-        legislative_subjects = subjects_data.get('legislativeSubjects', [])
-        if legislative_subjects:
-            subject_names = [s.get('name', '') for s in legislative_subjects if s.get('name')]
-            if subject_names:
-                text_parts.append(f"Legislative Subjects: {', '.join(subject_names[:5])}")  # Limit to 5
+        if isinstance(subjects_data, dict):
+            policy_area_data = subjects_data.get('policyArea', {})
+            if isinstance(policy_area_data, dict):
+                policy_area = policy_area_data.get('name')
+                if policy_area:
+                    text_parts.append(f"Policy Area: {policy_area}")
+            
+            legislative_subjects = subjects_data.get('legislativeSubjects', [])
+            if legislative_subjects and isinstance(legislative_subjects, list):
+                subject_names = []
+                for s in legislative_subjects:
+                    if isinstance(s, dict) and s.get('name'):
+                        subject_names.append(s['name'])
+                if subject_names:
+                    text_parts.append(f"Legislative Subjects: {', '.join(subject_names[:5])}")  # Limit to 5
         
         # Full bill text (if available)
         if bill.get('full_text'):
@@ -498,9 +549,10 @@ def convert_bill_to_document(bill: Dict) -> Dict:
         else:
             # Fallback to summary if full text not available
             summaries = bill.get('summaries', [])
-            if summaries and summaries[0].get('text'):
-                text_parts.append(f"\nSummary:\n{summaries[0]['text']}")
-                print("Using bill summary (full text not available)")
+            if summaries and isinstance(summaries, list) and len(summaries) > 0:
+                if isinstance(summaries[0], dict) and summaries[0].get('text'):
+                    text_parts.append(f"\nSummary:\n{summaries[0]['text']}")
+                    print("Using bill summary (full text not available)")
         
         # Combine all text
         full_text = '\n'.join(text_parts)
