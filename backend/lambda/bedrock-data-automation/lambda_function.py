@@ -225,8 +225,8 @@ class BedrockDataAutomationClient:
     
     def wait_for_completion(self,
                            invocation_arn: str,
-                           max_wait_seconds: int = 900,
-                           poll_interval: int = 10) -> Dict[str, Any]:
+                           max_wait_seconds: int = 1200,
+                           poll_interval: int = 15) -> Dict[str, Any]:
         """
         Wait for Data Automation processing to complete
         
@@ -302,6 +302,46 @@ class DataAutomationOrchestrator:
         self.s3_handler = s3_handler
         self.output_bucket = output_bucket
     
+    def _extract_text_from_output(self, output_uri: str) -> str:
+        """Extract text from Data Automation output"""
+        # Parse S3 URI
+        bucket = output_uri.split('/')[2]
+        key = '/'.join(output_uri.split('/')[3:])
+        
+        # Download and parse output
+        response = self.s3.get_object(Bucket=bucket, Key=key)
+        output_data = json.loads(response['Body'].read())
+        
+        # Extract text from output (adjust based on actual output format)
+        text_parts = []
+        if 'blocks' in output_data:
+            for block in output_data['blocks']:
+                if block.get('blockType') == 'LINE' and 'text' in block:
+                    text_parts.append(block['text'])
+        
+        return '\n'.join(text_parts)
+    
+    def _save_extraction_to_s3(self, original_s3_key: str, extracted_text: str) -> str:
+        """Save extracted text to S3 and return the key"""
+        # Create extraction key from original PDF key
+        extraction_key = original_s3_key.replace('pdfs/', 'extractions/').replace('.pdf', '.json')
+        
+        extraction_data = {
+            'extracted_text': extracted_text,
+            'timestamp': datetime.utcnow().isoformat(),
+            'source_pdf': original_s3_key
+        }
+        
+        self.s3.put_object(
+            Bucket=os.environ['DATA_BUCKET'],
+            Key=extraction_key,
+            Body=json.dumps(extraction_data),
+            ContentType='application/json'
+        )
+        
+        logger.info(f"Saved extraction to: s3://{os.environ['DATA_BUCKET']}/{extraction_key}")
+        return extraction_key
+
     def process_pdfs(self, pdf_list: List[Dict[str, str]]) -> Dict[str, Any]:
         """
         Process list of PDFs with Data Automation
@@ -310,17 +350,17 @@ class DataAutomationOrchestrator:
             pdf_list: List of dicts with 's3_uri' and 's3_key'
         
         Returns:
-            Processing results dict
+            Processing results dict with S3 keys only (not full text)
         """
         logger.info(f"Processing {len(pdf_list)} PDFs with Data Automation")
         
-        results = []
+        extraction_keys = []
         failed = []
         
         for pdf_info in pdf_list:
             try:
                 result = self._process_single_pdf(pdf_info)
-                results.append(asdict(result))
+                extraction_keys.append(result.s3_key)  # Only S3 key, not full text
             except Exception as e:
                 logger.error(f"Failed to process {pdf_info.get('s3_uri')}: {e}")
                 failed.append({
@@ -330,9 +370,9 @@ class DataAutomationOrchestrator:
         
         return {
             'success': True,
-            'total_processed': len(results),
+            'total_processed': len(extraction_keys),
             'total_failed': len(failed),
-            'results': results,
+            'extraction_keys': extraction_keys,  # Just S3 keys
             'failed': failed
         }
     

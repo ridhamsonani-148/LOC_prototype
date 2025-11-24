@@ -33,6 +33,16 @@ def lambda_handler(event, context):
     """
     print(f"Event: {json.dumps(event)}")
     
+    # Check if previous step failed
+    if event.get('statusCode') == 500 or 'error' in event:
+        error_msg = f"Previous step failed: {event.get('error', 'Unknown error')}"
+        print(f"ERROR: {error_msg}")
+        return {
+            'statusCode': 500,
+            'error': error_msg,
+            'skipped': True
+        }
+    
     # Get extraction results
     if 'results' in event and event['results']:
         results = event['results']
@@ -43,6 +53,7 @@ def lambda_handler(event, context):
         if not s3_key:
             error_msg = f"Missing s3_key in event. Event keys: {list(event.keys())}"
             print(f"ERROR: {error_msg}")
+            print(f"Full event: {json.dumps(event, indent=2)}")
             return {
                 'statusCode': 400,
                 'error': error_msg

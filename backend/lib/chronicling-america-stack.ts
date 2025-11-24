@@ -261,6 +261,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         role: lambdaRole,
         environment: {
           DATA_BUCKET: dataBucket.bucketName,
+          CONGRESS_API_KEY: "MThtRT5WkFu8I8CHOfiLLebG4nsnKcX3JnNv2N8A",
         },
         logGroup: imageCollectorLogGroup,
       }
@@ -510,18 +511,48 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       {
         lambdaFunction: bedrockDataAutomationFunction,
         outputPath: "$.Payload",
+        retryOnServiceExceptions: true,
+      }
+    ).addCatch(
+      new stepfunctions.Fail(this, "ExtractionFailed", {
+        cause: "Text extraction failed",
+        error: "ExtractionError",
+      }),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.error",
       }
     );
 
     const dataExtractorTask = new tasks.LambdaInvoke(this, "DataExtractor", {
       lambdaFunction: dataExtractorFunction,
       outputPath: "$.Payload",
-    });
+      retryOnServiceExceptions: true,
+    }).addCatch(
+      new stepfunctions.Fail(this, "DataExtractionFailed", {
+        cause: "Data extraction failed",
+        error: "DataExtractionError",
+      }),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.error",
+      }
+    );
 
     const loadToNeptuneTask = new tasks.LambdaInvoke(this, "LoadToNeptune", {
       lambdaFunction: neptuneLoaderFunction,
       outputPath: "$.Payload",
-    });
+      retryOnServiceExceptions: true,
+    }).addCatch(
+      new stepfunctions.Fail(this, "NeptuneLoadFailed", {
+        cause: "Failed to load documents to Neptune",
+        error: "NeptuneLoadError",
+      }),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.error",
+      }
+    );
 
     // GraphRAG Pipeline with Bedrock Knowledge Base
     // Images → PDF → Bedrock Data Automation → Neptune → Bedrock KB (auto entity extraction)

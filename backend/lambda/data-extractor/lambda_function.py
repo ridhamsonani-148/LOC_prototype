@@ -98,28 +98,38 @@ def lambda_handler(event, context):
     }
 
 
-def download_image(image_url: str, max_size: tuple = (3000, 3000)) -> bytes:
+def download_image(image_url: str, max_size: tuple = (8000, 8000)) -> bytes:
     """
     Download and prepare IIIF image for Claude Vision
     Handles NEW LOC.gov API IIIF URLs
+    Preserves original quality, only resizes if exceeds Claude's 8000x8000 limit
     """
     try:
         print(f"Downloading image from {image_url}")
         response = requests.get(image_url, timeout=60)
         response.raise_for_status()
         
-        # Open and resize image
+        # Get original image
         img = Image.open(BytesIO(response.content))
+        original_size = img.size
+        print(f"Original image size: {original_size}")
         
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
+        # Only resize if exceeds Claude's absolute maximum (8000x8000)
         if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
             img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            print(f"⚠️ Resized from {original_size} to {img.size} (exceeded Claude's 8000x8000 limit)")
+        else:
+            print(f"✅ Keeping original size: {img.size} (within Claude's limits)")
         
-        # Convert to JPEG bytes
+        # Convert to JPEG with maximum quality
         buffer = BytesIO()
-        img.save(buffer, format='JPEG', quality=85)
+        img.save(buffer, format='JPEG', quality=95)
+        final_size_mb = len(buffer.getvalue()) / (1024 * 1024)
+        print(f"Final image size: {final_size_mb:.2f} MB")
+        
         return buffer.getvalue()
         
     except Exception as e:

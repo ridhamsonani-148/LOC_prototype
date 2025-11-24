@@ -58,17 +58,27 @@ def get_stack_outputs():
         print("  cd backend && ./deploy.sh")
         sys.exit(1)
 
-def test_pipeline_execution(state_machine_arn, start_date=None, end_date=None, max_pages=None):
+def test_pipeline_execution(state_machine_arn, source='newspapers', start_date=None, end_date=None, max_pages=None, congress=None, bill_type=None, limit=None):
     """Test Step Functions pipeline execution"""
-    print_header("Test 1: Pipeline Execution")
+    print_header(f"Test 1: Pipeline Execution ({source})")
     
     sf = boto3.client('stepfunctions')
     
-    execution_input = {
-        "start_date": start_date or "1815-08-01",
-        "end_date": end_date or "1815-08-05",
-        "max_pages": max_pages or 20
-    }
+    # Build execution input based on source
+    if source == 'congress':
+        execution_input = {
+            "source": "congress",
+            "congress": congress or 118,
+            "bill_type": bill_type or "hr",
+            "limit": limit or 10
+        }
+    else:
+        execution_input = {
+            "source": "newspapers",
+            "start_date": start_date or "1815-08-01",
+            "end_date": end_date or "1815-08-05",
+            "max_pages": max_pages or 20
+        }
     
     print(f"Input: {json.dumps(execution_input, indent=2)}")
     
@@ -145,6 +155,67 @@ def test_s3_data(bucket_name):
         print_error(f"Failed to check S3: {e}")
         return False
 
+def test_congress_direct(congress=118, bill_type='hr', limit=5):
+    """Test Congress bills collection directly (without Step Functions)"""
+    print_header("Quick Test: Congress Bills Collection")
+    
+    lambda_client = boto3.client('lambda')
+    
+    payload = {
+        "source": "congress",
+        "congress": congress,
+        "bill_type": bill_type,
+        "limit": limit
+    }
+    
+    print(f"Testing with: Congress {congress}, Type: {bill_type}, Limit: {limit}")
+    
+    try:
+        # Invoke image-collector Lambda directly
+        response = lambda_client.invoke(
+            FunctionName='chronicling-america-pipeline-image-collector',
+            InvocationType='RequestResponse',
+            Payload=json.dumps(payload)
+        )
+        
+        result = json.loads(response['Payload'].read())
+        print(f"\nResponse: {json.dumps(result, indent=2)}")
+        
+        if result.get('statusCode') == 200:
+            print_success(f"Collected {result.get('documents_count', 0)} bills")
+            print(f"Saved to: {result.get('s3_key', 'N/A')}")
+            
+            # Now test Neptune loader
+            if result.get('s3_key'):
+                print("\nLoading to Neptune...")
+                neptune_response = lambda_client.invoke(
+                    FunctionName='chronicling-america-pipeline-neptune-loader',
+                    InvocationType='RequestResponse',
+                    Payload=json.dumps({
+                        'bucket': result['bucket'],
+                        's3_key': result['s3_key']
+                    })
+                )
+                
+                neptune_result = json.loads(neptune_response['Payload'].read())
+                
+                if neptune_result.get('statusCode') == 200:
+                    print_success(f"Loaded {neptune_result.get('documents_loaded', 0)} documents to Neptune")
+                    return True
+                else:
+                    print_error(f"Neptune loading failed: {neptune_result.get('error', 'Unknown')}")
+                    return False
+        else:
+            print_error(f"Collection failed: {result.get('error', 'Unknown')}")
+            return False
+            
+    except Exception as e:
+        print_error(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def test_chat_api(api_url):
     """Test Chat API endpoint"""
     print_header("Test 3: Chat API")
@@ -189,14 +260,31 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Test with newspapers (default)
   python test_backend.py
   python test_backend.py --max-pages 5
   python test_backend.py --start-date 1815-08-01 --end-date 1815-08-10 --max-pages 10
+  
+  # Test with Congress bills
+  python test_backend.py --source congress
+  python test_backend.py --source congress --congress 118 --bill-type hr --limit 5
+  python test_backend.py --source congress --congress 117 --bill-type s --limit 10
         '''
     )
+    
+    # Source selection
+    parser.add_argument('--source', type=str, choices=['newspapers', 'congress'], 
+                       default='newspapers', help='Data source: newspapers or congress')
+    
+    # Newspaper options
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 1815-08-01')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD), default: 1815-08-05')
     parser.add_argument('--max-pages', type=int, help='Maximum pages to process, default: 20')
+    
+    # Congress options
+    parser.add_argument('--congress', type=int, help='Congress number (e.g., 118), default: 118')
+    parser.add_argument('--bill-type', type=str, help='Bill type (hr, s, hjres, etc.), default: hr')
+    parser.add_argument('--limit', type=int, help='Number of bills to fetch, default: 10')
     
     args = parser.parse_args()
     
@@ -218,9 +306,13 @@ Examples:
     if state_machine_arn:
         result = test_pipeline_execution(
             state_machine_arn,
+            source=args.source,
             start_date=args.start_date,
             end_date=args.end_date,
-            max_pages=args.max_pages
+            max_pages=args.max_pages,
+            congress=args.congress,
+            bill_type=args.bill_type,
+            limit=args.limit
         )
         results.append(('Pipeline Execution', result))
     
@@ -245,10 +337,32 @@ Examples:
         else:
             print_warning(f"{test_name}: INCOMPLETE")
     
+    # Quick Congress test if requested
+    if args.source == 'congress':
+        print("\n" + "="*50)
+        print("Running quick Congress bills test...")
+        print("="*50)
+        congress_result = test_congress_direct(
+            congress=args.congress or 118,
+            bill_type=args.bill_type or 'hr',
+            limit=args.limit or 5
+        )
+        if congress_result:
+            print_success("Congress bills test completed!")
+            print_warning("Remember to sync Knowledge Base to extract entities:")
+            print("  aws bedrock-agent start-ingestion-job \\")
+            print(f"    --knowledge-base-id {outputs.get('KnowledgeBaseId', 'YOUR_KB_ID')} \\")
+            print(f"    --data-source-id {outputs.get('KnowledgeBaseDataSourceId', 'YOUR_DS_ID')}")
+    
     print(f"\n{BLUE}Next Steps:{NC}")
-    print("1. Open the web UI: frontend/index.html")
-    print(f"2. Enter API URL: {api_url}")
-    print("3. Start chatting with your historical newspaper data!")
+    if args.source == 'congress':
+        print("1. Wait for Knowledge Base sync (~5-10 minutes)")
+        print("2. Query bills via chat API")
+        print(f"3. Example: curl -X POST {api_url} -d '{{\"question\":\"What bills were introduced about taxation?\"}}'")
+    else:
+        print("1. Open the web UI: frontend/index.html")
+        print(f"2. Enter API URL: {api_url}")
+        print("3. Start chatting with your historical newspaper data!")
     print("")
 
 if __name__ == '__main__':
