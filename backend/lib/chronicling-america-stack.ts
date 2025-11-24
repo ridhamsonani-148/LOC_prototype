@@ -152,17 +152,278 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     neptuneInstance.addDependency(neptuneCluster);
 
     // ========================================
-    // Bedrock Knowledge Base - MANUAL SETUP REQUIRED
+    // Neptune Exporter Lambda
     // ========================================
-    // NOTE: Neptune as a data source for Bedrock Knowledge Base is not yet
-    // supported via CloudFormation. You must create the Knowledge Base manually
-    // in the AWS Console after deployment.
-    //
-    // Steps:
-    // 1. Go to AWS Console → Bedrock → Knowledge Bases → Create
-    // 2. Configure with Neptune as data source
-    // 3. Set vertex label: "Document", text field: "document_text"
-    // 4. Update chat-handler Lambda with KNOWLEDGE_BASE_ID environment variable
+    const neptuneExporterLogGroup = new logs.LogGroup(
+      this,
+      "NeptuneExporterLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-neptune-exporter`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const neptuneExporterFunction = new lambda.DockerImageFunction(
+      this,
+      "NeptuneExporterFunction",
+      {
+        functionName: `${projectName}-neptune-exporter`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/neptune-exporter")
+        ),
+        timeout: cdk.Duration.minutes(15),
+        memorySize: 1024,
+        role: lambdaRole,
+        vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [neptuneSecurityGroup],
+        environment: {
+          DATA_BUCKET: dataBucket.bucketName,
+          NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
+          NEPTUNE_PORT: "8182",
+        },
+        logGroup: neptuneExporterLogGroup,
+      }
+    );
+
+    // ========================================
+    // Bedrock Knowledge Base (Automated with S3)
+    // ========================================
+    
+    // Create IAM role for Knowledge Base
+    const knowledgeBaseRole = new iam.Role(this, "KnowledgeBaseRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
+      description: "Role for Bedrock Knowledge Base to access S3",
+    });
+
+    // Grant S3 read permissions to KB
+    dataBucket.grantRead(knowledgeBaseRole, "kb-documents/*");
+
+    // Grant Bedrock model invocation permissions
+    knowledgeBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      })
+    );
+
+    // Grant OpenSearch Serverless permissions
+    knowledgeBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["aoss:APIAccessAll"],
+        resources: [`arn:aws:aoss:${this.region}:${this.account}:collection/*`],
+      })
+    );
+
+    // Create OpenSearch Serverless collection for KB vector storage
+    const aossCollection = new cdk.CfnResource(this, "AOSSCollection", {
+      type: "AWS::OpenSearchServerless::Collection",
+      properties: {
+        Name: `${projectName}-kb`,
+        Type: "VECTORSEARCH",
+        Description: "Vector collection for Bedrock Knowledge Base",
+      },
+    });
+
+    // Create encryption policy for AOSS
+    const encryptionPolicy = new cdk.CfnResource(
+      this,
+      "AOSSEncryptionPolicy",
+      {
+        type: "AWS::OpenSearchServerless::SecurityPolicy",
+        properties: {
+          Name: `${projectName}-kb-encryption`,
+          Type: "encryption",
+          Policy: JSON.stringify({
+            Rules: [
+              {
+                ResourceType: "collection",
+                Resource: [`collection/${projectName}-kb`],
+              },
+            ],
+            AWSOwnedKey: true,
+          }),
+        },
+      }
+    );
+
+    // Create network policy for AOSS
+    const networkPolicy = new cdk.CfnResource(this, "AOSSNetworkPolicy", {
+      type: "AWS::OpenSearchServerless::SecurityPolicy",
+      properties: {
+        Name: `${projectName}-kb-network`,
+        Type: "network",
+        Policy: JSON.stringify([
+          {
+            Rules: [
+              {
+                ResourceType: "collection",
+                Resource: [`collection/${projectName}-kb`],
+              },
+            ],
+            AllowFromPublic: true,
+          },
+        ]),
+      },
+    });
+
+    // Create data access policy for AOSS
+    const dataAccessPolicy = new cdk.CfnResource(
+      this,
+      "AOSSDataAccessPolicy",
+      {
+        type: "AWS::OpenSearchServerless::AccessPolicy",
+        properties: {
+          Name: `${projectName}-kb-access`,
+          Type: "data",
+          Policy: JSON.stringify([
+            {
+              Rules: [
+                {
+                  ResourceType: "collection",
+                  Resource: [`collection/${projectName}-kb`],
+                  Permission: [
+                    "aoss:CreateCollectionItems",
+                    "aoss:DeleteCollectionItems",
+                    "aoss:UpdateCollectionItems",
+                    "aoss:DescribeCollectionItems",
+                  ],
+                },
+                {
+                  ResourceType: "index",
+                  Resource: [`index/${projectName}-kb/*`],
+                  Permission: [
+                    "aoss:CreateIndex",
+                    "aoss:DeleteIndex",
+                    "aoss:UpdateIndex",
+                    "aoss:DescribeIndex",
+                    "aoss:ReadDocument",
+                    "aoss:WriteDocument",
+                  ],
+                },
+              ],
+              Principal: [knowledgeBaseRole.roleArn, this.formatArn({
+                service: "iam",
+                resource: "root",
+                region: "",
+              })],
+            },
+          ]),
+        },
+      }
+    );
+
+    aossCollection.node.addDependency(encryptionPolicy);
+    aossCollection.node.addDependency(networkPolicy);
+
+    // Create Knowledge Base with S3 data source
+    const knowledgeBase = new bedrock.CfnKnowledgeBase(
+      this,
+      "KnowledgeBase",
+      {
+        name: `${projectName}-knowledge-base`,
+        description: "Knowledge base for historical documents with GraphRAG",
+        roleArn: knowledgeBaseRole.roleArn,
+        knowledgeBaseConfiguration: {
+          type: "VECTOR",
+          vectorKnowledgeBaseConfiguration: {
+            embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+          },
+        },
+        storageConfiguration: {
+          type: "OPENSEARCH_SERVERLESS",
+          opensearchServerlessConfiguration: {
+            collectionArn: aossCollection.getAtt("Arn").toString(),
+            vectorIndexName: "bedrock-knowledge-base-default-index",
+            fieldMapping: {
+              vectorField: "bedrock-knowledge-base-default-vector",
+              textField: "AMAZON_BEDROCK_TEXT_CHUNK",
+              metadataField: "AMAZON_BEDROCK_METADATA",
+            },
+          },
+        },
+      }
+    );
+
+    knowledgeBase.node.addDependency(aossCollection);
+    knowledgeBase.node.addDependency(dataAccessPolicy);
+
+    // Create S3 Data Source for Knowledge Base
+    const dataSource = new bedrock.CfnDataSource(this, "KBDataSource", {
+      name: `${projectName}-s3-data-source`,
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: "S3",
+        s3Configuration: {
+          bucketArn: dataBucket.bucketArn,
+          inclusionPrefixes: ["kb-documents/"],
+        },
+      },
+      vectorIngestionConfiguration: {
+        chunkingConfiguration: {
+          chunkingStrategy: "FIXED_SIZE",
+          fixedSizeChunkingConfiguration: {
+            maxTokens: 1000,
+            overlapPercentage: 20,
+          },
+        },
+      },
+    });
+
+    dataSource.node.addDependency(knowledgeBase);
+
+    // ========================================
+    // KB Sync Trigger Lambda
+    // ========================================
+    const kbSyncTriggerLogGroup = new logs.LogGroup(
+      this,
+      "KBSyncTriggerLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-kb-sync-trigger`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const kbSyncTriggerFunction = new lambda.DockerImageFunction(
+      this,
+      "KBSyncTriggerFunction",
+      {
+        functionName: `${projectName}-kb-sync-trigger`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/kb-sync-trigger")
+        ),
+        timeout: cdk.Duration.minutes(2),
+        memorySize: 256,
+        role: lambdaRole,
+        environment: {
+          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+          DATA_SOURCE_ID: dataSource.attrDataSourceId,
+        },
+        logGroup: kbSyncTriggerLogGroup,
+      }
+    );
+
+    // Grant permissions to start ingestion jobs
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob",
+          "bedrock:ListIngestionJobs",
+        ],
+        resources: [
+          knowledgeBase.attrKnowledgeBaseArn,
+          `${knowledgeBase.attrKnowledgeBaseArn}/*`,
+        ],
+      })
+    );
 
     // ========================================
     // Lambda Execution Role
@@ -476,7 +737,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
           NEPTUNE_PORT: "8182",
           BEDROCK_MODEL_ID: bedrockModelId,
-          KNOWLEDGE_BASE_ID: "", // Set this after creating Bedrock Knowledge Base
+          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         },
         logGroup: chatHandlerLogGroup,
       }
@@ -488,152 +749,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
         resources: ["*"],
-      })
-    );
-
-    // ========================================
-    // Bedrock Knowledge Base (Automatic!)
-    // ========================================
-
-    // Create Knowledge Base execution role
-    const kbRole = new iam.Role(this, "KnowledgeBaseRole", {
-      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
-      description: "Role for Bedrock Knowledge Base to access Neptune",
-    });
-
-    // Grant Neptune access
-    kbRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "neptune-db:*",
-          "neptune-db:ReadDataViaQuery",
-          "neptune-db:WriteDataViaQuery",
-        ],
-        resources: [neptuneCluster.attrClusterResourceId],
-      })
-    );
-
-    // Grant Bedrock model access
-    kbRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["bedrock:InvokeModel"],
-        resources: [
-          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-        ],
-      })
-    );
-
-    // Create Knowledge Base with Neptune storage
-    // Note: Using 'as any' to bypass TypeScript type checking for Neptune config
-    // Neptune support is available in CloudFormation but not yet in CDK types
-    const knowledgeBase = new bedrock.CfnKnowledgeBase(
-      this,
-      "KnowledgeBase",
-      {
-        name: `${projectName}-knowledge-base`,
-        description:
-          "Knowledge base for historical newspapers and Congress bills with GraphRAG",
-        roleArn: kbRole.roleArn,
-        knowledgeBaseConfiguration: {
-          type: "VECTOR",
-          vectorKnowledgeBaseConfiguration: {
-            embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-          },
-        },
-        storageConfiguration: {
-          type: "NEPTUNE",
-          neptuneConfiguration: {
-            endpoint: neptuneCluster.attrEndpoint,
-            vectorIndexName: "bedrock-knowledge-base-default-index",
-          },
-        } as any, // Bypass TypeScript for Neptune config
-      }
-    );
-
-    // Create Data Source with Neptune configuration
-    const dataSource = new bedrock.CfnDataSource(this, "DataSource", {
-      name: `${projectName}-neptune-datasource`,
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: "NEPTUNE",
-        neptuneConfiguration: {
-          sourceConfiguration: {
-            neptuneGraphConfiguration: {
-              endpoint: neptuneCluster.attrEndpoint,
-              vertexLabel: "Document",
-              textProperty: "document_text",
-              metadataProperties: [
-                "title",
-                "date",
-                "source",
-                "congress",
-                "bill_type",
-              ],
-            },
-          },
-        } as any, // Bypass TypeScript for Neptune config
-      } as any,
-      vectorIngestionConfiguration: {
-        chunkingConfiguration: {
-          chunkingStrategy: "FIXED_SIZE",
-          fixedSizeChunkingConfiguration: {
-            maxTokens: 1000,
-            overlapPercentage: 20,
-          },
-        },
-      },
-    });
-
-    // Update chat handler with KB ID
-    chatHandlerFunction.addEnvironment(
-      "KNOWLEDGE_BASE_ID",
-      knowledgeBase.attrKnowledgeBaseId
-    );
-
-    // 6. KB Sync Trigger Lambda
-    const kbSyncTriggerLogGroup = new logs.LogGroup(
-      this,
-      "KBSyncTriggerLogGroup",
-      {
-        logGroupName: `/aws/lambda/${projectName}-kb-sync-trigger`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }
-    );
-
-    const kbSyncTriggerFunction = new lambda.Function(
-      this,
-      "KBSyncTriggerFunction",
-      {
-        functionName: `${projectName}-kb-sync-trigger`,
-        runtime: lambda.Runtime.PYTHON_3_11,
-        handler: "lambda_function.lambda_handler",
-        code: lambda.Code.fromAsset(
-          path.join(__dirname, "../lambda/kb-sync-trigger")
-        ),
-        timeout: cdk.Duration.seconds(30),
-        memorySize: 256,
-        role: lambdaRole,
-        environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-          DATA_SOURCE_ID: dataSource.attrDataSourceId,
-        },
-        logGroup: kbSyncTriggerLogGroup,
-      }
-    );
-
-    // Grant KB sync permissions
-    lambdaRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock:StartIngestionJob",
-          "bedrock:GetIngestionJob",
-          "bedrock:ListIngestionJobs",
-        ],
-        resources: [knowledgeBase.attrKnowledgeBaseArn],
       })
     );
 
@@ -701,13 +816,28 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    const kbSyncTask = new tasks.LambdaInvoke(this, "TriggerKBSync", {
+    const exportToS3Task = new tasks.LambdaInvoke(this, "ExportToS3", {
+      lambdaFunction: neptuneExporterFunction,
+      outputPath: "$.Payload",
+      retryOnServiceExceptions: true,
+    }).addCatch(
+      new stepfunctions.Fail(this, "ExportFailed", {
+        cause: "Failed to export documents to S3",
+        error: "ExportError",
+      }),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.error",
+      }
+    );
+
+    const syncKBTask = new tasks.LambdaInvoke(this, "SyncKnowledgeBase", {
       lambdaFunction: kbSyncTriggerFunction,
       outputPath: "$.Payload",
       retryOnServiceExceptions: true,
     }).addCatch(
       new stepfunctions.Fail(this, "KBSyncFailed", {
-        cause: "Failed to trigger Knowledge Base sync",
+        cause: "Failed to sync Knowledge Base",
         error: "KBSyncError",
       }),
       {
@@ -716,14 +846,13 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // Fully Automated GraphRAG Pipeline with Bedrock Knowledge Base
-    // Images → PDF → Data Extraction → Neptune → KB Sync (auto entity extraction)
-    // Everything happens automatically!
+    // Fully Automated Pipeline: Images → PDF → Extraction → Neptune → S3 Export → KB Sync
     const definition = collectImagesTask
       .next(imageToPdfTask)
       .next(bedrockDataAutomationTask)
       .next(loadToNeptuneTask)
-      .next(kbSyncTask); // ← Automatic KB sync!
+      .next(exportToS3Task)
+      .next(syncKBTask);
 
     const stateMachine = new stepfunctions.StateMachine(
       this,
@@ -799,12 +928,19 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "KnowledgeBaseId", {
       value: knowledgeBase.attrKnowledgeBaseId,
-      description: "Bedrock Knowledge Base ID (auto-created!)",
+      description: "Bedrock Knowledge Base ID (auto-created)",
+      exportName: `${projectName}-kb-id`,
     });
 
     new cdk.CfnOutput(this, "KnowledgeBaseDataSourceId", {
       value: dataSource.attrDataSourceId,
       description: "Knowledge Base Data Source ID",
+      exportName: `${projectName}-kb-ds-id`,
+    });
+
+    new cdk.CfnOutput(this, "KBDocumentsPrefix", {
+      value: `s3://${dataBucket.bucketName}/kb-documents/`,
+      description: "S3 prefix where KB documents are stored",
     });
 
     // ========================================
