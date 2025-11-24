@@ -152,42 +152,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     neptuneInstance.addDependency(neptuneCluster);
 
     // ========================================
-    // Neptune Exporter Lambda
-    // ========================================
-    const neptuneExporterLogGroup = new logs.LogGroup(
-      this,
-      "NeptuneExporterLogGroup",
-      {
-        logGroupName: `/aws/lambda/${projectName}-neptune-exporter`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }
-    );
-
-    const neptuneExporterFunction = new lambda.DockerImageFunction(
-      this,
-      "NeptuneExporterFunction",
-      {
-        functionName: `${projectName}-neptune-exporter`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/neptune-exporter")
-        ),
-        timeout: cdk.Duration.minutes(15),
-        memorySize: 1024,
-        role: lambdaRole,
-        vpc,
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-        securityGroups: [neptuneSecurityGroup],
-        environment: {
-          DATA_BUCKET: dataBucket.bucketName,
-          NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
-          NEPTUNE_PORT: "8182",
-        },
-        logGroup: neptuneExporterLogGroup,
-      }
-    );
-
-    // ========================================
     // Bedrock Knowledge Base (Automated with S3)
     // ========================================
     
@@ -376,54 +340,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     });
 
     dataSource.node.addDependency(knowledgeBase);
-
-    // ========================================
-    // KB Sync Trigger Lambda
-    // ========================================
-    const kbSyncTriggerLogGroup = new logs.LogGroup(
-      this,
-      "KBSyncTriggerLogGroup",
-      {
-        logGroupName: `/aws/lambda/${projectName}-kb-sync-trigger`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }
-    );
-
-    const kbSyncTriggerFunction = new lambda.DockerImageFunction(
-      this,
-      "KBSyncTriggerFunction",
-      {
-        functionName: `${projectName}-kb-sync-trigger`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/kb-sync-trigger")
-        ),
-        timeout: cdk.Duration.minutes(2),
-        memorySize: 256,
-        role: lambdaRole,
-        environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-          DATA_SOURCE_ID: dataSource.attrDataSourceId,
-        },
-        logGroup: kbSyncTriggerLogGroup,
-      }
-    );
-
-    // Grant permissions to start ingestion jobs
-    lambdaRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock:StartIngestionJob",
-          "bedrock:GetIngestionJob",
-          "bedrock:ListIngestionJobs",
-        ],
-        resources: [
-          knowledgeBase.attrKnowledgeBaseArn,
-          `${knowledgeBase.attrKnowledgeBaseArn}/*`,
-        ],
-      })
-    );
 
     // ========================================
     // Lambda Execution Role
@@ -749,6 +665,90 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
         resources: ["*"],
+      })
+    );
+
+    // ========================================
+    // Neptune Exporter Lambda
+    // ========================================
+    const neptuneExporterLogGroup = new logs.LogGroup(
+      this,
+      "NeptuneExporterLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-neptune-exporter`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const neptuneExporterFunction = new lambda.DockerImageFunction(
+      this,
+      "NeptuneExporterFunction",
+      {
+        functionName: `${projectName}-neptune-exporter`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/neptune-exporter")
+        ),
+        timeout: cdk.Duration.minutes(15),
+        memorySize: 1024,
+        role: lambdaRole,
+        vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [neptuneSecurityGroup],
+        environment: {
+          DATA_BUCKET: dataBucket.bucketName,
+          NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
+          NEPTUNE_PORT: "8182",
+        },
+        logGroup: neptuneExporterLogGroup,
+      }
+    );
+
+    // ========================================
+    // KB Sync Trigger Lambda
+    // ========================================
+    const kbSyncTriggerLogGroup = new logs.LogGroup(
+      this,
+      "KBSyncTriggerLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-kb-sync-trigger`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const kbSyncTriggerFunction = new lambda.DockerImageFunction(
+      this,
+      "KBSyncTriggerFunction",
+      {
+        functionName: `${projectName}-kb-sync-trigger`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/kb-sync-trigger")
+        ),
+        timeout: cdk.Duration.minutes(2),
+        memorySize: 256,
+        role: lambdaRole,
+        environment: {
+          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+          DATA_SOURCE_ID: dataSource.attrDataSourceId,
+        },
+        logGroup: kbSyncTriggerLogGroup,
+      }
+    );
+
+    // Grant permissions to start ingestion jobs
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob",
+          "bedrock:ListIngestionJobs",
+        ],
+        resources: [
+          knowledgeBase.attrKnowledgeBaseArn,
+          `${knowledgeBase.attrKnowledgeBaseArn}/*`,
+        ],
       })
     );
 
