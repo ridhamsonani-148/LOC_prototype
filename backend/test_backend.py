@@ -201,7 +201,24 @@ def test_congress_direct(congress=118, bill_type='hr', limit=5):
                 
                 if neptune_result.get('statusCode') == 200:
                     print_success(f"Loaded {neptune_result.get('documents_loaded', 0)} documents to Neptune")
-                    return True
+                    
+                    # Trigger KB sync
+                    print("\nTriggering Knowledge Base sync...")
+                    kb_response = lambda_client.invoke(
+                        FunctionName='chronicling-america-pipeline-kb-sync-trigger',
+                        InvocationType='RequestResponse',
+                        Payload=json.dumps({})
+                    )
+                    
+                    kb_result = json.loads(kb_response['Payload'].read())
+                    
+                    if kb_result.get('statusCode') == 200:
+                        print_success(f"KB sync started: {kb_result.get('ingestion_job_id', 'N/A')}")
+                        print_info("Entity extraction will complete in 5-10 minutes")
+                        return True
+                    else:
+                        print_warning(f"KB sync failed: {kb_result.get('error', 'Unknown')}")
+                        return True  # Still success if Neptune loaded
                 else:
                     print_error(f"Neptune loading failed: {neptune_result.get('error', 'Unknown')}")
                     return False
@@ -214,6 +231,49 @@ def test_congress_direct(congress=118, bill_type='hr', limit=5):
         import traceback
         traceback.print_exc()
         return False
+
+
+def wait_for_kb_sync(kb_id, ds_id, max_wait=600):
+    """Wait for Knowledge Base sync to complete"""
+    print_header("Monitoring Knowledge Base Sync")
+    
+    bedrock_agent = boto3.client('bedrock-agent')
+    elapsed = 0
+    
+    print(f"Checking sync status every 30 seconds (max {max_wait}s)...")
+    
+    while elapsed < max_wait:
+        try:
+            response = bedrock_agent.list_ingestion_jobs(
+                knowledgeBaseId=kb_id,
+                dataSourceId=ds_id,
+                maxResults=1
+            )
+            
+            if response.get('ingestionJobSummaries'):
+                job = response['ingestionJobSummaries'][0]
+                status = job['status']
+                job_id = job.get('ingestionJobId', 'N/A')
+                
+                print(f"[{elapsed}s] Job: {job_id[:8]}... Status: {status}")
+                
+                if status == 'COMPLETE':
+                    print_success("Knowledge Base sync completed!")
+                    print_info("Entities and relationships extracted successfully")
+                    return True
+                elif status == 'FAILED':
+                    print_error("Knowledge Base sync failed")
+                    return False
+                
+        except Exception as e:
+            print_error(f"Error checking status: {e}")
+        
+        time.sleep(30)
+        elapsed += 30
+    
+    print_warning(f"Sync still in progress after {max_wait}s")
+    print_info("Check AWS Console → Bedrock → Knowledge Bases for status")
+    return None
 
 
 def test_chat_api(api_url):
@@ -349,10 +409,21 @@ Examples:
         )
         if congress_result:
             print_success("Congress bills test completed!")
-            print_warning("Remember to sync Knowledge Base to extract entities:")
-            print("  aws bedrock-agent start-ingestion-job \\")
-            print(f"    --knowledge-base-id {outputs.get('KnowledgeBaseId', 'YOUR_KB_ID')} \\")
-            print(f"    --data-source-id {outputs.get('KnowledgeBaseDataSourceId', 'YOUR_DS_ID')}")
+            
+            # Optionally wait for KB sync
+            kb_id = outputs.get('KnowledgeBaseId')
+            ds_id = outputs.get('KnowledgeBaseDataSourceId')
+            
+            if kb_id and ds_id:
+                print("\n" + "="*50)
+                user_input = input("Wait for Knowledge Base sync to complete? (y/n): ")
+                if user_input.lower() == 'y':
+                    wait_for_kb_sync(kb_id, ds_id, max_wait=600)
+                else:
+                    print_info("Skipping wait. Check sync status later:")
+                    print(f"  aws bedrock-agent list-ingestion-jobs --knowledge-base-id {kb_id}")
+            else:
+                print_warning("Knowledge Base IDs not found in stack outputs")
     
     print(f"\n{BLUE}Next Steps:{NC}")
     if args.source == 'congress':

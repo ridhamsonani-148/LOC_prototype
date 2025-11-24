@@ -491,6 +491,150 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     );
 
     // ========================================
+    // Bedrock Knowledge Base (Automatic!)
+    // ========================================
+
+    // Create Knowledge Base execution role
+    const kbRole = new iam.Role(this, "KnowledgeBaseRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
+      description: "Role for Bedrock Knowledge Base to access Neptune",
+    });
+
+    // Grant Neptune access
+    kbRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "neptune-db:*",
+          "neptune-db:ReadDataViaQuery",
+          "neptune-db:WriteDataViaQuery",
+        ],
+        resources: [neptuneCluster.attrClusterResourceId],
+      })
+    );
+
+    // Grant Bedrock model access
+    kbRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      })
+    );
+
+    // Create Knowledge Base
+    const knowledgeBase = new bedrock.CfnKnowledgeBase(
+      this,
+      "KnowledgeBase",
+      {
+        name: `${projectName}-knowledge-base`,
+        description:
+          "Knowledge base for historical newspapers and Congress bills with GraphRAG",
+        roleArn: kbRole.roleArn,
+        knowledgeBaseConfiguration: {
+          type: "VECTOR",
+          vectorKnowledgeBaseConfiguration: {
+            embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+          },
+        },
+        storageConfiguration: {
+          type: "NEPTUNE",
+          neptuneConfiguration: {
+            endpoint: neptuneCluster.attrEndpoint,
+            vectorIndexName: "bedrock-knowledge-base-default-index",
+          },
+        },
+      }
+    );
+
+    // Create Data Source
+    const dataSource = new bedrock.CfnDataSource(this, "DataSource", {
+      name: `${projectName}-neptune-datasource`,
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: "NEPTUNE",
+        neptuneConfiguration: {
+          sourceConfiguration: {
+            neptuneGraphConfiguration: {
+              endpoint: neptuneCluster.attrEndpoint,
+              vertexLabel: "Document",
+              textProperty: "document_text",
+              metadataProperties: [
+                "title",
+                "date",
+                "source",
+                "congress",
+                "bill_type",
+              ],
+            },
+          },
+        },
+      },
+      vectorIngestionConfiguration: {
+        chunkingConfiguration: {
+          chunkingStrategy: "FIXED_SIZE",
+          fixedSizeChunkingConfiguration: {
+            maxTokens: 1000,
+            overlapPercentage: 20,
+          },
+        },
+      },
+    });
+
+    // Update chat handler with KB ID
+    chatHandlerFunction.addEnvironment(
+      "KNOWLEDGE_BASE_ID",
+      knowledgeBase.attrKnowledgeBaseId
+    );
+
+    // 6. KB Sync Trigger Lambda
+    const kbSyncTriggerLogGroup = new logs.LogGroup(
+      this,
+      "KBSyncTriggerLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-kb-sync-trigger`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const kbSyncTriggerFunction = new lambda.Function(
+      this,
+      "KBSyncTriggerFunction",
+      {
+        functionName: `${projectName}-kb-sync-trigger`,
+        runtime: lambda.Runtime.PYTHON_3_11,
+        handler: "lambda_function.lambda_handler",
+        code: lambda.Code.fromAsset(
+          path.join(__dirname, "../lambda/kb-sync-trigger")
+        ),
+        timeout: cdk.Duration.seconds(30),
+        memorySize: 256,
+        role: lambdaRole,
+        environment: {
+          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+          DATA_SOURCE_ID: dataSource.attrDataSourceId,
+        },
+        logGroup: kbSyncTriggerLogGroup,
+      }
+    );
+
+    // Grant KB sync permissions
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob",
+          "bedrock:ListIngestionJobs",
+        ],
+        resources: [knowledgeBase.attrKnowledgeBaseArn],
+      })
+    );
+
+    // ========================================
     // Step Functions State Machine
     // ========================================
 
@@ -554,13 +698,29 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // GraphRAG Pipeline with Bedrock Knowledge Base
-    // Images → PDF → Bedrock Data Automation → Neptune → Bedrock KB (auto entity extraction)
-    // No need for separate entity extraction Lambda!
+    const kbSyncTask = new tasks.LambdaInvoke(this, "TriggerKBSync", {
+      lambdaFunction: kbSyncTriggerFunction,
+      outputPath: "$.Payload",
+      retryOnServiceExceptions: true,
+    }).addCatch(
+      new stepfunctions.Fail(this, "KBSyncFailed", {
+        cause: "Failed to trigger Knowledge Base sync",
+        error: "KBSyncError",
+      }),
+      {
+        errors: ["States.ALL"],
+        resultPath: "$.error",
+      }
+    );
+
+    // Fully Automated GraphRAG Pipeline with Bedrock Knowledge Base
+    // Images → PDF → Data Extraction → Neptune → KB Sync (auto entity extraction)
+    // Everything happens automatically!
     const definition = collectImagesTask
       .next(imageToPdfTask)
       .next(bedrockDataAutomationTask)
-      .next(loadToNeptuneTask);
+      .next(loadToNeptuneTask)
+      .next(kbSyncTask); // ← Automatic KB sync!
 
     const stateMachine = new stepfunctions.StateMachine(
       this,
@@ -634,10 +794,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Chat endpoint URL",
     });
 
-    new cdk.CfnOutput(this, "BedrockKnowledgeBaseSetup", {
-      value: "MANUAL_SETUP_REQUIRED",
-      description:
-        "After deployment: 1) Run pipeline to load documents to Neptune, 2) Create Bedrock Knowledge Base manually in AWS Console (Neptune data source not yet supported in CloudFormation), 3) Update chat-handler Lambda with KNOWLEDGE_BASE_ID",
+    new cdk.CfnOutput(this, "KnowledgeBaseId", {
+      value: knowledgeBase.attrKnowledgeBaseId,
+      description: "Bedrock Knowledge Base ID (auto-created!)",
+    });
+
+    new cdk.CfnOutput(this, "KnowledgeBaseDataSourceId", {
+      value: dataSource.attrDataSourceId,
+      description: "Knowledge Base Data Source ID",
     });
 
     // ========================================
