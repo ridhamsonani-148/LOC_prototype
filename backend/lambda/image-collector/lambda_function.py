@@ -252,6 +252,11 @@ def handle_congress_bills(event):
             print(f"Error converting bill {i+1}: {e}")
             import traceback
             traceback.print_exc()
+            # Print the problematic bill structure
+            print(f"Bill structure: congress={bill.get('congress')}, type={bill.get('type')}, number={bill.get('number')}")
+            print(f"Bill has 'titles' key: {'titles' in bill}")
+            if 'titles' in bill:
+                print(f"Titles type: {type(bill.get('titles'))}")
             continue
     
     # Save to S3
@@ -474,10 +479,12 @@ def convert_bill_to_document(bill: Dict) -> Dict:
         # Get short title from titles array
         titles = bill.get('titles', [])
         short_title = None
-        for title_obj in titles:
-            if title_obj.get('titleType') == 'Short Title(s) as Introduced':
-                short_title = title_obj.get('title')
-                break
+        if titles and isinstance(titles, list):
+            for title_obj in titles:
+                if isinstance(title_obj, dict):
+                    if title_obj.get('titleType') == 'Short Title(s) as Introduced':
+                        short_title = title_obj.get('title')
+                        break
         
         if short_title:
             text_parts.append(f"Short Title: {short_title}")
