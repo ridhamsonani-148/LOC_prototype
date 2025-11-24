@@ -218,6 +218,12 @@ def handle_congress_bills(event):
     # Fetch bills
     bills = fetch_congress_bills(congress, bill_type, limit)
     
+    print(f"DEBUG: fetch_congress_bills returned type={type(bills)}, len={len(bills) if isinstance(bills, list) else 'N/A'}")
+    if bills and len(bills) > 0:
+        print(f"DEBUG: First bill type={type(bills[0])}")
+        if isinstance(bills[0], dict):
+            print(f"DEBUG: First bill keys={list(bills[0].keys())[:5]}")
+    
     if not bills:
         print("WARNING: No bills collected!")
         return {
@@ -229,10 +235,24 @@ def handle_congress_bills(event):
     
     # Convert bills to Neptune-compatible format directly
     documents = []
-    for bill in bills:
-        doc = convert_bill_to_document(bill)
-        if doc:
-            documents.append(doc)
+    for i, bill in enumerate(bills):
+        try:
+            print(f"Converting bill {i+1}/{len(bills)}: type={type(bill)}")
+            if not isinstance(bill, dict):
+                print(f"ERROR: Bill is not a dict, it's a {type(bill)}, value={str(bill)[:100]}")
+                continue
+            
+            doc = convert_bill_to_document(bill)
+            if doc:
+                documents.append(doc)
+                print(f"Successfully converted bill {i+1}")
+            else:
+                print(f"Failed to convert bill {i+1}")
+        except Exception as e:
+            print(f"Error converting bill {i+1}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
     
     # Save to S3
     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
@@ -348,7 +368,8 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
             fmt_type = fmt.get('type', '').lower()
             fmt_url = fmt.get('url', '')
             
-            if 'text' in fmt_type or 'txt' in fmt_type:
+            # Look for actual .txt files, not .htm
+            if ('text' in fmt_type or 'txt' in fmt_type) and fmt_url.endswith('.txt'):
                 text_url = fmt_url
                 print(f"Found plain text format: {text_url}")
                 break
@@ -361,6 +382,12 @@ def fetch_bill_text(congress: int, bill_type: str, bill_number: int) -> str:
             text_response = requests.get(text_url, timeout=60)
             text_response.raise_for_status()
             bill_text = text_response.text
+            
+            # Check if it's HTML (congress.gov returns .htm files that are actually HTML)
+            if '<html' in bill_text.lower() or '<!doctype' in bill_text.lower():
+                print("WARNING: Downloaded file is HTML, not plain text. Skipping full text.")
+                return None
+            
             print(f"Downloaded bill text: {len(bill_text)} characters")
             return bill_text
         
@@ -384,10 +411,19 @@ def convert_bill_to_document(bill: Dict) -> Dict:
     This creates a document that neptune-loader can directly process
     """
     try:
+        # Debug: print bill structure
+        if not isinstance(bill, dict):
+            print(f"ERROR in convert_bill_to_document: bill is {type(bill)}, not dict")
+            return None
+        
+        print(f"Bill keys: {list(bill.keys())[:10]}")  # Print first 10 keys
+        
         congress = bill.get('congress', 'unknown')
         bill_type = bill.get('type', 'unknown')
         bill_number = bill.get('number', 'unknown')
         bill_id = f"{congress}-{bill_type}-{bill_number}"
+        
+        print(f"Processing bill: {bill_id}")
         
         # Build comprehensive text content
         text_parts = []
