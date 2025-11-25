@@ -5,6 +5,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as neptune from "aws-cdk-lib/aws-neptune";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
+import * as opensearchserverless from "aws-cdk-lib/aws-opensearchserverless";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as stepfunctions from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
@@ -154,11 +155,47 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
     // OpenSearch Serverless Collection (Vector Store for KB)
     // ========================================
-    const ossCollection = new bedrock.CfnCollection(this, "OssCollection", {
+    
+    // Encryption policy for OpenSearch Serverless
+    const ossEncryptionPolicy = new opensearchserverless.CfnSecurityPolicy(this, "OssEncryptionPolicy", {
+      name: `${projectName}-kb-encryption`,
+      type: "encryption",
+      policy: JSON.stringify({
+        Rules: [
+          {
+            ResourceType: "collection",
+            Resource: [`collection/${projectName}-kb-collection`],
+          },
+        ],
+        AWSOwnedKey: true,
+      }),
+    });
+
+    // Network policy for OpenSearch Serverless
+    const ossNetworkPolicy = new opensearchserverless.CfnSecurityPolicy(this, "OssNetworkPolicy", {
+      name: `${projectName}-kb-network`,
+      type: "network",
+      policy: JSON.stringify([
+        {
+          Rules: [
+            {
+              ResourceType: "collection",
+              Resource: [`collection/${projectName}-kb-collection`],
+            },
+          ],
+          AllowFromPublic: true,
+        },
+      ]),
+    });
+
+    const ossCollection = new opensearchserverless.CfnCollection(this, "OssCollection", {
       name: `${projectName}-kb-collection`,
       type: "VECTORSEARCH",
       description: "Vector store for Bedrock Knowledge Base GraphRAG",
     });
+
+    ossCollection.addDependency(ossEncryptionPolicy);
+    ossCollection.addDependency(ossNetworkPolicy);
 
     // ========================================
     // IAM Role for Bedrock Knowledge Base
@@ -179,6 +216,31 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         resources: [ossCollection.attrArn],
       })
     );
+
+    // Data access policy for OpenSearch Serverless
+    const ossDataAccessPolicy = new opensearchserverless.CfnAccessPolicy(this, "OssDataAccessPolicy", {
+      name: `${projectName}-kb-data-access`,
+      type: "data",
+      policy: JSON.stringify([
+        {
+          Rules: [
+            {
+              ResourceType: "collection",
+              Resource: [`collection/${projectName}-kb-collection`],
+              Permission: ["aoss:CreateCollectionItems", "aoss:UpdateCollectionItems", "aoss:DescribeCollectionItems"],
+            },
+            {
+              ResourceType: "index",
+              Resource: [`index/${projectName}-kb-collection/*`],
+              Permission: ["aoss:CreateIndex", "aoss:UpdateIndex", "aoss:DescribeIndex", "aoss:ReadDocument", "aoss:WriteDocument"],
+            },
+          ],
+          Principal: [bedrockKBRole.roleArn],
+        },
+      ]),
+    });
+
+    ossDataAccessPolicy.addDependency(ossCollection);
 
     // ========================================
     // Bedrock Knowledge Base with GraphRAG
