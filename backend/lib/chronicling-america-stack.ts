@@ -475,7 +475,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
           NEPTUNE_PORT: "8182",
           BEDROCK_MODEL_ID: bedrockModelId,
-          KNOWLEDGE_BASE_ID: knowledgeBaseId,  // Now uses actual KB ID
+          KNOWLEDGE_BASE_ID: knowledgeBaseId, // Now uses actual KB ID
         },
         logGroup: chatHandlerLogGroup,
       }
@@ -551,8 +551,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         memorySize: 256,
         role: lambdaRole,
         environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBaseId,  // Now uses actual KB ID
-          DATA_SOURCE_ID: dataSourceId,        // Now uses actual Data Source ID
+          KNOWLEDGE_BASE_ID: knowledgeBaseId, // Now uses actual KB ID
+          DATA_SOURCE_ID: dataSourceId, // Now uses actual Data Source ID
         },
         logGroup: kbSyncTriggerLogGroup,
       }
@@ -747,17 +747,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "KBDocumentsPrefix", {
       value: `s3://${dataBucket.bucketName}/kb-documents/`,
-      description: "S3 prefix where KB documents are exported",
-    });
-
-    new cdk.CfnOutput(this, "KBDocumentsPrefix", {
-      value: `s3://${dataBucket.bucketName}/kb-documents/`,
-      description: "S3 prefix where KB documents are exported (ready for manual KB setup)",
+      description:
+        "S3 prefix where KB documents are exported (ready for manual KB setup)",
     });
 
     new cdk.CfnOutput(this, "KnowledgeBaseSetup", {
       value: "MANUAL_SETUP_REQUIRED",
-      description: "Create KB in AWS Console, then set KNOWLEDGE_BASE_ID and DATA_SOURCE_ID env vars",
+      description:
+        "Create KB in AWS Console, then set KNOWLEDGE_BASE_ID and DATA_SOURCE_ID env vars",
     });
 
     // ========================================
