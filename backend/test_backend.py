@@ -155,7 +155,132 @@ def test_s3_data(bucket_name):
         print_error(f"Failed to check S3: {e}")
         return False
 
-def test_congress_direct(congress=118, bill_type='hr', limit=5):
+def print_info(text):
+    print(f"{BLUE}ℹ️  {text}{NC}")
+
+def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=None):
+    """Collect bills from ALL historical Congresses (1-16)"""
+    print_header("Collecting Bills from ALL Historical Congresses (1-16)")
+    
+    lambda_client = boto3.client('lambda')
+    
+    total_bills = 0
+    total_loaded = 0
+    failed_congresses = []
+    
+    print_info("This will collect bills from Congress 1 (1789) through Congress 16 (1821)")
+    print_info(f"Bill types: {', '.join(bill_types)}")
+    if limit_per_congress:
+        print_info(f"Limit per Congress: {limit_per_congress} bills")
+    else:
+        print_info("Collecting ALL bills from each Congress (no limit)")
+    print("")
+    
+    # Iterate through all historical Congresses
+    for congress_num in range(1, 17):  # Congress 1 to 16
+        print(f"\n{'-'*50}")
+        print(f"Processing Congress {congress_num} ({1789 + (congress_num-1)*2}-{1791 + (congress_num-1)*2})")
+        print(f"{'-'*50}")
+        
+        for bill_type in bill_types:
+            print(f"\n  → Collecting {bill_type.upper()} bills from Congress {congress_num}...")
+            
+            payload = {
+                "source": "congress",
+                "congress": congress_num,
+                "bill_type": bill_type,
+                "limit": limit_per_congress  # None means get all bills
+            }
+            
+            try:
+                # Invoke image-collector Lambda
+                response = lambda_client.invoke(
+                    FunctionName='chronicling-america-pipeline-image-collector',
+                    InvocationType='RequestResponse',
+                    Payload=json.dumps(payload)
+                )
+                
+                result = json.loads(response['Payload'].read())
+                
+                if result.get('statusCode') == 200:
+                    bills_count = result.get('documents_count', 0)
+                    total_bills += bills_count
+                    print_success(f"Collected {bills_count} {bill_type.upper()} bills from Congress {congress_num}")
+                    
+                    # Load to Neptune
+                    if result.get('s3_key') and bills_count > 0:
+                        neptune_response = lambda_client.invoke(
+                            FunctionName='chronicling-america-pipeline-neptune-loader',
+                            InvocationType='RequestResponse',
+                            Payload=json.dumps({
+                                'bucket': result['bucket'],
+                                's3_key': result['s3_key']
+                            })
+                        )
+                        
+                        neptune_result = json.loads(neptune_response['Payload'].read())
+                        
+                        if neptune_result.get('statusCode') == 200:
+                            loaded_count = neptune_result.get('documents_loaded', 0)
+                            total_loaded += loaded_count
+                            print_success(f"  ✓ Loaded {loaded_count} documents to Neptune")
+                        else:
+                            print_error(f"  ✗ Neptune loading failed: {neptune_result.get('error', 'Unknown')}")
+                            failed_congresses.append(f"Congress {congress_num} ({bill_type})")
+                    elif bills_count == 0:
+                        print_info(f"  No {bill_type.upper()} bills found in Congress {congress_num}")
+                else:
+                    print_error(f"Collection failed: {result.get('error', 'Unknown')}")
+                    failed_congresses.append(f"Congress {congress_num} ({bill_type})")
+                    
+            except Exception as e:
+                print_error(f"Error processing Congress {congress_num} ({bill_type}): {e}")
+                failed_congresses.append(f"Congress {congress_num} ({bill_type})")
+                continue
+            
+            # Small delay to avoid rate limiting
+            time.sleep(1)
+    
+    # Summary
+    print("\n" + "="*50)
+    print_header("Collection Summary")
+    print(f"Total bills collected: {total_bills}")
+    print(f"Total documents loaded to Neptune: {total_loaded}")
+    
+    if failed_congresses:
+        print_warning(f"Failed to process {len(failed_congresses)} Congress/bill-type combinations:")
+        for failed in failed_congresses:
+            print(f"  - {failed}")
+    else:
+        print_success("All Congresses processed successfully!")
+    
+    # Trigger KB sync once at the end
+    if total_loaded > 0:
+        print("\n" + "="*50)
+        print("Triggering Knowledge Base sync for all collected bills...")
+        try:
+            kb_response = lambda_client.invoke(
+                FunctionName='chronicling-america-pipeline-kb-sync-trigger',
+                InvocationType='RequestResponse',
+                Payload=json.dumps({})
+            )
+            
+            kb_result = json.loads(kb_response['Payload'].read())
+            
+            if kb_result.get('statusCode') == 200:
+                print_success(f"KB sync started: {kb_result.get('ingestion_job_id', 'N/A')}")
+                print_info("Entity extraction will complete in 5-10 minutes")
+                return True
+            else:
+                print_warning(f"KB sync failed: {kb_result.get('error', 'Unknown')}")
+                return True  # Still success if Neptune loaded
+        except Exception as e:
+            print_error(f"Failed to trigger KB sync: {e}")
+            return True  # Still success if Neptune loaded
+    
+    return total_bills > 0
+
+def test_congress_direct(congress=7, bill_type='hr', limit=5):
     """Test Congress bills collection directly (without Step Functions)"""
     print_header("Quick Test: Congress Bills Collection")
     
@@ -169,6 +294,7 @@ def test_congress_direct(congress=118, bill_type='hr', limit=5):
     }
     
     print(f"Testing with: Congress {congress}, Type: {bill_type}, Limit: {limit}")
+    print_info(f"Note: Historical bills available for Congress 1-16 (1789-1821)")
     
     try:
         # Invoke image-collector Lambda directly
@@ -325,10 +451,15 @@ Examples:
   python test_backend.py --max-pages 5
   python test_backend.py --start-date 1815-08-01 --end-date 1815-08-10 --max-pages 10
   
-  # Test with Congress bills
+  # Test with Congress bills (Historical: Congress 1-16, 1789-1821)
   python test_backend.py --source congress
-  python test_backend.py --source congress --congress 118 --bill-type hr --limit 5
-  python test_backend.py --source congress --congress 117 --bill-type s --limit 10
+  python test_backend.py --source congress --congress 7 --bill-type hr --limit 5
+  python test_backend.py --source congress --congress 1 --bill-type hr --limit 10
+  
+  # Collect from ALL historical Congresses (1-16)
+  python test_backend.py --source congress --all-congresses
+  python test_backend.py --source congress --all-congresses --limit 10
+  python test_backend.py --source congress --all-congresses --bill-types "hr,s,hjres"
         '''
     )
     
@@ -342,9 +473,11 @@ Examples:
     parser.add_argument('--max-pages', type=int, help='Maximum pages to process, default: 20')
     
     # Congress options
-    parser.add_argument('--congress', type=int, help='Congress number (e.g., 118), default: 118')
+    parser.add_argument('--congress', type=int, help='Congress number (1-16 for historical bills), default: 7. Use --all-congresses to collect from all')
     parser.add_argument('--bill-type', type=str, help='Bill type (hr, s, hjres, etc.), default: hr')
-    parser.add_argument('--limit', type=int, help='Number of bills to fetch, default: 10')
+    parser.add_argument('--limit', type=int, help='Number of bills to fetch per Congress, default: 10 (use 0 for all bills)')
+    parser.add_argument('--all-congresses', action='store_true', help='Collect bills from ALL historical Congresses (1-16)')
+    parser.add_argument('--bill-types', type=str, help='Comma-separated bill types for --all-congresses (e.g., "hr,s"), default: hr,s')
     
     args = parser.parse_args()
     
@@ -400,13 +533,36 @@ Examples:
     # Quick Congress test if requested
     if args.source == 'congress':
         print("\n" + "="*50)
-        print("Running quick Congress bills test...")
-        print("="*50)
-        congress_result = test_congress_direct(
-            congress=args.congress or 118,
-            bill_type=args.bill_type or 'hr',
-            limit=args.limit or 5
-        )
+        
+        if args.all_congresses:
+            # Collect from ALL historical Congresses
+            print("Collecting bills from ALL historical Congresses (1-16)...")
+            print_info("This will take several minutes to complete")
+            print("="*50)
+            
+            # Parse bill types
+            bill_types = ['hr', 's']  # default
+            if args.bill_types:
+                bill_types = [bt.strip() for bt in args.bill_types.split(',')]
+            
+            # Set limit (0 or None means get all bills)
+            limit_per_congress = args.limit if args.limit and args.limit > 0 else None
+            
+            congress_result = test_all_historical_congresses(
+                bill_types=bill_types,
+                limit_per_congress=limit_per_congress
+            )
+        else:
+            # Single Congress test
+            print("Running quick Congress bills test...")
+            print_info("Historical bills available for Congress 1-16 (1789-1821)")
+            print("="*50)
+            congress_result = test_congress_direct(
+                congress=args.congress or 7,
+                bill_type=args.bill_type or 'hr',
+                limit=args.limit or 5
+            )
+        
         if congress_result:
             print_success("Congress bills test completed!")
             
@@ -429,7 +585,12 @@ Examples:
     if args.source == 'congress':
         print("1. Wait for Knowledge Base sync (~5-10 minutes)")
         print("2. Query bills via chat API")
-        print(f"3. Example: curl -X POST {api_url} -d '{{\"question\":\"What bills were introduced about taxation?\"}}'")
+        if args.all_congresses:
+            print(f"3. Example: curl -X POST {api_url} -d '{{\"question\":\"What bills were introduced about taxation in the early Congresses?\"}}'")
+            print(f"4. Example: curl -X POST {api_url} -d '{{\"question\":\"Summarize legislation from Congress 1 through 16\"}}'")
+        else:
+            print(f"3. Example: curl -X POST {api_url} -d '{{\"question\":\"What bills were introduced in Congress 7?\"}}'")
+        print_info("Note: Historical bills are available for Congress 1-16 (1789-1821)")
     else:
         print("1. Open the web UI: frontend/index.html")
         print(f"2. Enter API URL: {api_url}")
