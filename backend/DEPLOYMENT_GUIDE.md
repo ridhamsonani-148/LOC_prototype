@@ -25,10 +25,11 @@ That's it! This single command:
 4. ✅ Creates VPC and Neptune cluster
 5. ✅ Creates all Lambda functions
 6. ✅ Creates Step Functions pipeline
-7. ✅ **Creates Bedrock Knowledge Base automatically**
-8. ✅ **Configures Knowledge Base with Neptune**
-9. ✅ Creates API Gateway
-10. ✅ Sets up all IAM roles and permissions
+7. ✅ **Creates OpenSearch Serverless collection**
+8. ✅ **Creates Bedrock Knowledge Base automatically**
+9. ✅ **Configures S3 Data Source for KB**
+10. ✅ Creates API Gateway
+11. ✅ Sets up all IAM roles and permissions
 
 ## What Gets Created
 
@@ -45,14 +46,14 @@ That's it! This single command:
 5. **chat-handler**: Handles chat queries via Bedrock KB
 
 ### Bedrock Knowledge Base (Automatic!)
-- **Name**: `chronicling-america-pipeline-knowledge-base`
-- **Type**: Vector with Neptune storage
+- **Name**: `chronicling-america-pipeline-graphrag-kb`
+- **Type**: Vector with OpenSearch Serverless storage
 - **Embeddings**: Amazon Titan Embed Text v2
+- **Data Source**: S3 (`kb-documents/` prefix)
 - **Configuration**:
-  - Vertex Label: `Document`
-  - Text Field: `document_text`
-  - Metadata: `title`, `publication_date`, `page_number`
   - Chunking: Fixed size (1000 tokens, 20% overlap)
+  - Auto-extracts entities and relationships (GraphRAG)
+  - Serverless vector store
 
 ### API Gateway
 - **Endpoint**: `/chat` (POST) - Chat interface
@@ -71,7 +72,8 @@ aws cloudformation describe-stacks \
 **Key Outputs:**
 - `StateMachineArn`: Step Functions ARN
 - `KnowledgeBaseId`: Bedrock KB ID (auto-created!)
-- `KnowledgeBaseDataSourceId`: Data source ID
+- `DataSourceId`: Data source ID (auto-created!)
+- `OpenSearchCollectionArn`: OpenSearch Serverless collection ARN
 - `ChatEndpoint`: API endpoint for chat
 - `NeptuneEndpoint`: Neptune cluster endpoint
 

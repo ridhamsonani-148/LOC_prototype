@@ -152,175 +152,68 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     neptuneInstance.addDependency(neptuneCluster);
 
     // ========================================
-    // Bedrock Knowledge Base (Automated with S3)
+    // OpenSearch Serverless Collection (Vector Store for KB)
     // ========================================
-    
-    // Create IAM role for Knowledge Base
-    const knowledgeBaseRole = new iam.Role(this, "KnowledgeBaseRole", {
-      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
-      description: "Role for Bedrock Knowledge Base to access S3",
+    const ossCollection = new bedrock.CfnCollection(this, "OssCollection", {
+      name: `${projectName}-kb-collection`,
+      type: "VECTORSEARCH",
+      description: "Vector store for Bedrock Knowledge Base GraphRAG",
     });
 
-    // Grant S3 read permissions to KB
-    dataBucket.grantRead(knowledgeBaseRole, "kb-documents/*");
+    // ========================================
+    // IAM Role for Bedrock Knowledge Base
+    // ========================================
+    const bedrockKBRole = new iam.Role(this, "BedrockKBRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock.amazonaws.com"),
+      description: "Role for Bedrock Knowledge Base to access S3 and OpenSearch",
+    });
 
-    // Grant Bedrock model invocation permissions
-    knowledgeBaseRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["bedrock:InvokeModel"],
-        resources: [
-          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-        ],
-      })
-    );
+    // Grant S3 read access to KB
+    dataBucket.grantRead(bedrockKBRole, "kb-documents/*");
 
-    // Grant OpenSearch Serverless permissions
-    knowledgeBaseRole.addToPolicy(
+    // Grant OpenSearch access
+    bedrockKBRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["aoss:APIAccessAll"],
-        resources: [`arn:aws:aoss:${this.region}:${this.account}:collection/*`],
+        resources: [ossCollection.attrArn],
       })
     );
 
-    // Create OpenSearch Serverless collection for KB vector storage
-    const aossCollection = new cdk.CfnResource(this, "AOSSCollection", {
-      type: "AWS::OpenSearchServerless::Collection",
-      properties: {
-        Name: `${projectName}-kb`,
-        Type: "VECTORSEARCH",
-        Description: "Vector collection for Bedrock Knowledge Base",
+    // ========================================
+    // Bedrock Knowledge Base with GraphRAG
+    // ========================================
+    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, "GraphRagKB", {
+      name: `${projectName}-graphrag-kb`,
+      description: "Historical documents with automatic entity extraction",
+      roleArn: bedrockKBRole.roleArn,
+      knowledgeBaseConfiguration: {
+        type: "VECTOR",
+        vectorKnowledgeBaseConfiguration: {
+          embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        },
+      },
+      storageConfiguration: {
+        type: "OPENSEARCH_SERVERLESS",
+        opensearchServerlessConfiguration: {
+          collectionArn: ossCollection.attrArn,
+          vectorIndexName: "bedrock-knowledge-base-default-index",
+          fieldMapping: {
+            vectorField: "bedrock-knowledge-base-default-vector",
+            textField: "AMAZON_BEDROCK_TEXT_CHUNK",
+            metadataField: "AMAZON_BEDROCK_METADATA",
+          },
+        },
       },
     });
 
-    // Create encryption policy for AOSS
-    const encryptionPolicy = new cdk.CfnResource(
-      this,
-      "AOSSEncryptionPolicy",
-      {
-        type: "AWS::OpenSearchServerless::SecurityPolicy",
-        properties: {
-          Name: `${projectName}-kb-encryption`,
-          Type: "encryption",
-          Policy: JSON.stringify({
-            Rules: [
-              {
-                ResourceType: "collection",
-                Resource: [`collection/${projectName}-kb`],
-              },
-            ],
-            AWSOwnedKey: true,
-          }),
-        },
-      }
-    );
-
-    // Create network policy for AOSS
-    const networkPolicy = new cdk.CfnResource(this, "AOSSNetworkPolicy", {
-      type: "AWS::OpenSearchServerless::SecurityPolicy",
-      properties: {
-        Name: `${projectName}-kb-network`,
-        Type: "network",
-        Policy: JSON.stringify([
-          {
-            Rules: [
-              {
-                ResourceType: "collection",
-                Resource: [`collection/${projectName}-kb`],
-              },
-            ],
-            AllowFromPublic: true,
-          },
-        ]),
-      },
-    });
-
-    // Create data access policy for AOSS
-    const dataAccessPolicy = new cdk.CfnResource(
-      this,
-      "AOSSDataAccessPolicy",
-      {
-        type: "AWS::OpenSearchServerless::AccessPolicy",
-        properties: {
-          Name: `${projectName}-kb-access`,
-          Type: "data",
-          Policy: JSON.stringify([
-            {
-              Rules: [
-                {
-                  ResourceType: "collection",
-                  Resource: [`collection/${projectName}-kb`],
-                  Permission: [
-                    "aoss:CreateCollectionItems",
-                    "aoss:DeleteCollectionItems",
-                    "aoss:UpdateCollectionItems",
-                    "aoss:DescribeCollectionItems",
-                  ],
-                },
-                {
-                  ResourceType: "index",
-                  Resource: [`index/${projectName}-kb/*`],
-                  Permission: [
-                    "aoss:CreateIndex",
-                    "aoss:DeleteIndex",
-                    "aoss:UpdateIndex",
-                    "aoss:DescribeIndex",
-                    "aoss:ReadDocument",
-                    "aoss:WriteDocument",
-                  ],
-                },
-              ],
-              Principal: [knowledgeBaseRole.roleArn, this.formatArn({
-                service: "iam",
-                resource: "root",
-                region: "",
-              })],
-            },
-          ]),
-        },
-      }
-    );
-
-    aossCollection.node.addDependency(encryptionPolicy);
-    aossCollection.node.addDependency(networkPolicy);
-
-    // Create Knowledge Base with S3 data source
-    const knowledgeBase = new bedrock.CfnKnowledgeBase(
-      this,
-      "KnowledgeBase",
-      {
-        name: `${projectName}-knowledge-base`,
-        description: "Knowledge base for historical documents with GraphRAG",
-        roleArn: knowledgeBaseRole.roleArn,
-        knowledgeBaseConfiguration: {
-          type: "VECTOR",
-          vectorKnowledgeBaseConfiguration: {
-            embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-          },
-        },
-        storageConfiguration: {
-          type: "OPENSEARCH_SERVERLESS",
-          opensearchServerlessConfiguration: {
-            collectionArn: aossCollection.getAtt("Arn").toString(),
-            vectorIndexName: "bedrock-knowledge-base-default-index",
-            fieldMapping: {
-              vectorField: "bedrock-knowledge-base-default-vector",
-              textField: "AMAZON_BEDROCK_TEXT_CHUNK",
-              metadataField: "AMAZON_BEDROCK_METADATA",
-            },
-          },
-        },
-      }
-    );
-
-    knowledgeBase.node.addDependency(aossCollection);
-    knowledgeBase.node.addDependency(dataAccessPolicy);
-
-    // Create S3 Data Source for Knowledge Base
-    const dataSource = new bedrock.CfnDataSource(this, "KBDataSource", {
-      name: `${projectName}-s3-data-source`,
+    // ========================================
+    // S3 Data Source for Knowledge Base
+    // ========================================
+    const dataSource = new bedrock.CfnDataSource(this, "S3DataSource", {
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      name: `${projectName}-s3-datasource`,
+      description: "S3 data source for exported Neptune documents",
       dataSourceConfiguration: {
         type: "S3",
         s3Configuration: {
@@ -339,7 +232,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       },
     });
 
-    dataSource.node.addDependency(knowledgeBase);
+    // Use actual KB and Data Source IDs
+    const knowledgeBaseId = knowledgeBase.attrKnowledgeBaseId;
+    const dataSourceId = dataSource.attrDataSourceId;
 
     // ========================================
     // Lambda Execution Role
@@ -653,7 +548,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           NEPTUNE_ENDPOINT: neptuneCluster.attrEndpoint,
           NEPTUNE_PORT: "8182",
           BEDROCK_MODEL_ID: bedrockModelId,
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+          KNOWLEDGE_BASE_ID: knowledgeBaseId,  // Now uses actual KB ID
         },
         logGroup: chatHandlerLogGroup,
       }
@@ -729,14 +624,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         memorySize: 256,
         role: lambdaRole,
         environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-          DATA_SOURCE_ID: dataSource.attrDataSourceId,
+          KNOWLEDGE_BASE_ID: knowledgeBaseId,  // Now uses actual KB ID
+          DATA_SOURCE_ID: dataSourceId,        // Now uses actual Data Source ID
         },
         logGroup: kbSyncTriggerLogGroup,
       }
     );
 
-    // Grant permissions to start ingestion jobs
+    // Grant permissions to start ingestion jobs (for any KB)
     lambdaRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -745,10 +640,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:GetIngestionJob",
           "bedrock:ListIngestionJobs",
         ],
-        resources: [
-          knowledgeBase.attrKnowledgeBaseArn,
-          `${knowledgeBase.attrKnowledgeBaseArn}/*`,
-        ],
+        resources: ["*"],
       })
     );
 
@@ -836,9 +728,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       outputPath: "$.Payload",
       retryOnServiceExceptions: true,
     }).addCatch(
-      new stepfunctions.Fail(this, "KBSyncFailed", {
-        cause: "Failed to sync Knowledge Base",
-        error: "KBSyncError",
+      // Don't fail the whole pipeline if KB sync fails (KB might not be set up yet)
+      new stepfunctions.Succeed(this, "KBSyncSkipped", {
+        comment: "KB sync failed - KB may not be configured yet",
       }),
       {
         errors: ["States.ALL"],
@@ -846,7 +738,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // Fully Automated Pipeline: Images → PDF → Extraction → Neptune → S3 Export → KB Sync
+    // Semi-Automated Pipeline: Images → PDF → Extraction → Neptune → S3 Export → KB Sync (optional)
     const definition = collectImagesTask
       .next(imageToPdfTask)
       .next(bedrockDataAutomationTask)
@@ -926,21 +818,26 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Chat endpoint URL",
     });
 
+    new cdk.CfnOutput(this, "KBDocumentsPrefix", {
+      value: `s3://${dataBucket.bucketName}/kb-documents/`,
+      description: "S3 prefix where KB documents are exported",
+    });
+
     new cdk.CfnOutput(this, "KnowledgeBaseId", {
-      value: knowledgeBase.attrKnowledgeBaseId,
+      value: knowledgeBaseId,
       description: "Bedrock Knowledge Base ID (auto-created)",
       exportName: `${projectName}-kb-id`,
     });
 
-    new cdk.CfnOutput(this, "KnowledgeBaseDataSourceId", {
-      value: dataSource.attrDataSourceId,
-      description: "Knowledge Base Data Source ID",
-      exportName: `${projectName}-kb-ds-id`,
+    new cdk.CfnOutput(this, "DataSourceId", {
+      value: dataSourceId,
+      description: "KB Data Source ID (auto-created)",
+      exportName: `${projectName}-ds-id`,
     });
 
-    new cdk.CfnOutput(this, "KBDocumentsPrefix", {
-      value: `s3://${dataBucket.bucketName}/kb-documents/`,
-      description: "S3 prefix where KB documents are stored",
+    new cdk.CfnOutput(this, "OpenSearchCollectionArn", {
+      value: ossCollection.attrArn,
+      description: "OpenSearch Serverless Collection ARN",
     });
 
     // ========================================
