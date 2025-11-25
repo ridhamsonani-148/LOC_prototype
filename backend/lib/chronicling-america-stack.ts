@@ -4,11 +4,12 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as neptune from "aws-cdk-lib/aws-neptune";
-import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as stepfunctions from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -119,6 +120,82 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       ec2.Port.tcp(8182),
       "Allow Neptune access from within security group"
     );
+
+    // ========================================
+    // ECS Cluster for Fargate Tasks
+    // ========================================
+    const ecsCluster = new ecs.Cluster(this, "ECSCluster", {
+      clusterName: `${projectName}-cluster`,
+      vpc,
+      containerInsights: true,
+    });
+
+    // ECR Repository for Fargate task image
+    const collectorRepository = new ecr.Repository(this, "CollectorRepository", {
+      repositoryName: `${projectName}-collector`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          maxImageCount: 5,
+          description: "Keep only 5 most recent images",
+        },
+      ],
+    });
+
+    // Fargate Task Execution Role
+    const fargateExecutionRole = new iam.Role(this, "FargateExecutionRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AmazonECSTaskExecutionRolePolicy"
+        ),
+      ],
+    });
+
+    // Fargate Task Role (for application permissions)
+    const fargateTaskRole = new iam.Role(this, "FargateTaskRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+    });
+
+    // Grant S3 permissions to Fargate task
+    dataBucket.grantReadWrite(fargateTaskRole);
+
+    // Fargate Task Definition
+    const collectorTaskDefinition = new ecs.FargateTaskDefinition(
+      this,
+      "CollectorTaskDefinition",
+      {
+        family: `${projectName}-collector`,
+        cpu: 2048, // 2 vCPU
+        memoryLimitMiB: 4096, // 4 GB
+        executionRole: fargateExecutionRole,
+        taskRole: fargateTaskRole,
+      }
+    );
+
+    // Log Group for Fargate task
+    const collectorLogGroup = new logs.LogGroup(this, "CollectorLogGroup", {
+      logGroupName: `/ecs/${projectName}-collector`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Container Definition
+    collectorTaskDefinition.addContainer("CollectorContainer", {
+      containerName: "collector",
+      image: ecs.ContainerImage.fromEcrRepository(collectorRepository, "latest"),
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "collector",
+        logGroup: collectorLogGroup,
+      }),
+      environment: {
+        BUCKET_NAME: dataBucket.bucketName,
+        START_CONGRESS: "1",
+        END_CONGRESS: "16",
+        BILL_TYPES: "hr,s",
+        CONGRESS_API_KEY: "MThtRT5WkFu8I8CHOfiLLebG4nsnKcX3JnNv2N8A",
+      },
+    });
 
     // ========================================
     // Neptune Cluster
@@ -236,6 +313,67 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
     // Lambda Functions (Docker-based)
     // ========================================
+
+    // 0. Fargate Trigger Lambda (triggers Fargate task for bill collection)
+    const fargateTriggerLogGroup = new logs.LogGroup(
+      this,
+      "FargateTriggerLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-fargate-trigger`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const fargateTriggerFunction = new lambda.DockerImageFunction(
+      this,
+      "FargateTriggerFunction",
+      {
+        functionName: `${projectName}-fargate-trigger`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/fargate-trigger")
+        ),
+        timeout: cdk.Duration.seconds(30),
+        memorySize: 256,
+        role: lambdaRole,
+        environment: {
+          ECS_CLUSTER_NAME: ecsCluster.clusterName,
+          TASK_DEFINITION_ARN: collectorTaskDefinition.taskDefinitionArn,
+          SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
+          SECURITY_GROUP_ID: neptuneSecurityGroup.securityGroupId,
+          BUCKET_NAME: dataBucket.bucketName,
+          START_CONGRESS: "1",
+          END_CONGRESS: "16",
+          BILL_TYPES: "hr,s",
+        },
+        logGroup: fargateTriggerLogGroup,
+      }
+    );
+
+    // Grant ECS permissions to Lambda
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ecs:RunTask",
+          "ecs:DescribeTasks",
+          "ecs:StopTask",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant PassRole for ECS task execution
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [
+          fargateExecutionRole.roleArn,
+          fargateTaskRole.roleArn,
+        ],
+      })
+    );
 
     // 1. Image Collector Lambda
     const imageCollectorLogGroup = new logs.LogGroup(
@@ -576,9 +714,28 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
 
     // Define tasks
-    const collectImagesTask = new tasks.LambdaInvoke(this, "CollectImages", {
-      lambdaFunction: imageCollectorFunction,
-      outputPath: "$.Payload",
+    // Use Fargate task for data collection (no timeout limit)
+    const collectBillsTask = new tasks.EcsRunTask(this, "CollectBills", {
+      integrationPattern: stepfunctions.IntegrationPattern.RUN_JOB,
+      cluster: ecsCluster,
+      taskDefinition: collectorTaskDefinition,
+      launchTarget: new tasks.EcsFargateLaunchTarget({
+        platformVersion: ecs.FargatePlatformVersion.LATEST,
+      }),
+      containerOverrides: [
+        {
+          containerDefinition: collectorTaskDefinition.defaultContainer!,
+          environment: [
+            {
+              name: "BUCKET_NAME",
+              value: dataBucket.bucketName,
+            },
+          ],
+        },
+      ],
+      assignPublicIp: true,
+      subnets: { subnetType: ec2.SubnetType.PUBLIC },
+      resultPath: "$.fargateResult",
     });
 
     const imageToPdfTask = new tasks.LambdaInvoke(this, "ImageToPdf", {
@@ -665,13 +822,10 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // Semi-Automated Pipeline: Images → PDF → Extraction → Neptune → S3 Export → KB Sync (optional)
-    const definition = collectImagesTask
-      .next(imageToPdfTask)
-      .next(bedrockDataAutomationTask)
-      .next(loadToNeptuneTask)
-      .next(exportToS3Task)
-      .next(syncKBTask);
+    // Simplified Pipeline: Fargate collects & extracts → KB Sync
+    // Fargate task handles: API calls, text extraction, S3 storage
+    // Bedrock KB handles: Entity extraction, Neptune storage (automatic)
+    const definition = collectBillsTask.next(syncKBTask);
 
     const stateMachine = new stepfunctions.StateMachine(
       this,
@@ -713,6 +867,13 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     const healthResource = api.root.addResource("health");
     healthResource.addMethod("GET", chatIntegration);
 
+    // Fargate trigger endpoint
+    const collectIntegration = new apigateway.LambdaIntegration(
+      fargateTriggerFunction
+    );
+    const collectResource = api.root.addResource("collect");
+    collectResource.addMethod("POST", collectIntegration);
+
     // ========================================
     // Outputs
     // ========================================
@@ -745,6 +906,11 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Chat endpoint URL",
     });
 
+    new cdk.CfnOutput(this, "CollectEndpoint", {
+      value: `${api.url}collect`,
+      description: "Fargate collection trigger endpoint",
+    });
+
     new cdk.CfnOutput(this, "KBDocumentsPrefix", {
       value: `s3://${dataBucket.bucketName}/kb-documents/`,
       description:
@@ -755,6 +921,18 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       value: "MANUAL_SETUP_REQUIRED",
       description:
         "Create KB in AWS Console, then set KNOWLEDGE_BASE_ID and DATA_SOURCE_ID env vars",
+    });
+
+    new cdk.CfnOutput(this, "ECRRepositoryUri", {
+      value: collectorRepository.repositoryUri,
+      description: "ECR repository URI for Fargate collector image",
+      exportName: `${projectName}-ecr-repository`,
+    });
+
+    new cdk.CfnOutput(this, "FargateTaskDefinitionArn", {
+      value: collectorTaskDefinition.taskDefinitionArn,
+      description: "Fargate task definition ARN",
+      exportName: `${projectName}-fargate-task`,
     });
 
     // ========================================

@@ -280,83 +280,77 @@ def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=No
     
     return total_bills > 0
 
-def test_congress_direct(congress=7, bill_type='hr', limit=5):
-    """Test Congress bills collection directly (without Step Functions)"""
-    print_header("Quick Test: Congress Bills Collection")
-    
-    lambda_client = boto3.client('lambda')
-    
-    payload = {
-        "source": "congress",
-        "congress": congress,
-        "bill_type": bill_type,
-        "limit": limit
-    }
+def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
+    """Test Congress bills collection via Fargate trigger Lambda"""
+    print_header("Quick Test: Congress Bills Collection (via Fargate)")
     
     print(f"Testing with: Congress {congress}, Type: {bill_type}, Limit: {limit}")
     print_info(f"Note: Historical bills available for Congress 1-16 (1789-1821)")
     
-    try:
-        # Invoke image-collector Lambda directly
-        response = lambda_client.invoke(
-            FunctionName='chronicling-america-pipeline-image-collector',
-            InvocationType='RequestResponse',
-            Payload=json.dumps(payload)
-        )
+    if api_url:
+        # Use API Gateway endpoint
+        import requests
         
-        result = json.loads(response['Payload'].read())
-        print(f"\nResponse: {json.dumps(result, indent=2)}")
+        payload = {
+            "start_congress": congress,
+            "end_congress": congress,
+            "bill_types": bill_type
+        }
         
-        if result.get('statusCode') == 200:
-            print_success(f"Collected {result.get('documents_count', 0)} bills")
-            print(f"Saved to: {result.get('s3_key', 'N/A')}")
+        try:
+            print(f"\nTriggering Fargate task via API: {api_url}")
+            response = requests.post(api_url, json=payload, timeout=30)
             
-            # Now test Neptune loader
-            if result.get('s3_key'):
-                print("\nLoading to Neptune...")
-                neptune_response = lambda_client.invoke(
-                    FunctionName='chronicling-america-pipeline-neptune-loader',
-                    InvocationType='RequestResponse',
-                    Payload=json.dumps({
-                        'bucket': result['bucket'],
-                        's3_key': result['s3_key']
-                    })
-                )
-                
-                neptune_result = json.loads(neptune_response['Payload'].read())
-                
-                if neptune_result.get('statusCode') == 200:
-                    print_success(f"Loaded {neptune_result.get('documents_loaded', 0)} documents to Neptune")
-                    
-                    # Trigger KB sync
-                    print("\nTriggering Knowledge Base sync...")
-                    kb_response = lambda_client.invoke(
-                        FunctionName='chronicling-america-pipeline-kb-sync-trigger',
-                        InvocationType='RequestResponse',
-                        Payload=json.dumps({})
-                    )
-                    
-                    kb_result = json.loads(kb_response['Payload'].read())
-                    
-                    if kb_result.get('statusCode') == 200:
-                        print_success(f"KB sync started: {kb_result.get('ingestion_job_id', 'N/A')}")
-                        print_info("Entity extraction will complete in 5-10 minutes")
-                        return True
-                    else:
-                        print_warning(f"KB sync failed: {kb_result.get('error', 'Unknown')}")
-                        return True  # Still success if Neptune loaded
-                else:
-                    print_error(f"Neptune loading failed: {neptune_result.get('error', 'Unknown')}")
-                    return False
-        else:
-            print_error(f"Collection failed: {result.get('error', 'Unknown')}")
+            if response.status_code == 200:
+                result = response.json()
+                print_success(f"Fargate task started: {result.get('taskArn', 'N/A')}")
+                print_info("Task is running asynchronously. Check CloudWatch logs for progress.")
+                print_info(f"Log group: /ecs/chronicling-america-pipeline-collector")
+                return True
+            else:
+                print_error(f"API returned status {response.status_code}: {response.text}")
+                return False
+        except Exception as e:
+            print_error(f"API request failed: {e}")
             return False
+    else:
+        # Fallback to direct Lambda invocation
+        lambda_client = boto3.client('lambda')
+        
+        payload = {
+            "body": json.dumps({
+                "start_congress": congress,
+                "end_congress": congress,
+                "bill_types": bill_type
+            })
+        }
+        
+        try:
+            # Invoke fargate-trigger Lambda directly
+            response = lambda_client.invoke(
+                FunctionName='chronicling-america-pipeline-fargate-trigger',
+                InvocationType='RequestResponse',
+                Payload=json.dumps(payload)
+            )
             
-    except Exception as e:
-        print_error(f"Test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+            result = json.loads(response['Payload'].read())
+            print(f"\nResponse: {json.dumps(result, indent=2)}")
+            
+            if result.get('statusCode') == 200:
+                body = json.loads(result.get('body', '{}'))
+                print_success(f"Fargate task started: {body.get('taskArn', 'N/A')}")
+                print_info("Task is running asynchronously. Check CloudWatch logs for progress.")
+                print_info(f"Log group: /ecs/chronicling-america-pipeline-collector")
+                return True
+            else:
+                print_error(f"Failed to start Fargate task: {result.get('body', 'Unknown')}")
+                return False
+                
+        except Exception as e:
+            print_error(f"Test failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
 
 def wait_for_kb_sync(kb_id, ds_id, max_wait=600):
@@ -491,6 +485,7 @@ Examples:
     state_machine_arn = outputs.get('StateMachineArn')
     bucket_name = outputs.get('DataBucketName')
     api_url = outputs.get('ChatEndpoint')
+    collect_url = outputs.get('CollectEndpoint')
     
     # Run tests
     results = []
@@ -560,7 +555,8 @@ Examples:
             congress_result = test_congress_direct(
                 congress=args.congress or 7,
                 bill_type=args.bill_type or 'hr',
-                limit=args.limit or 5
+                limit=args.limit or 5,
+                api_url=collect_url
             )
         
         if congress_result:
