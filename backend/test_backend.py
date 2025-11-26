@@ -93,8 +93,9 @@ def test_pipeline_execution(state_machine_arn, source='newspapers', start_date=N
         print(f"Execution ARN: {execution_arn}")
         
         # Monitor execution
-        print("\nMonitoring execution (max 10 minutes)...")
-        max_wait = 600
+        print("\nMonitoring execution (max 30 minutes)...")
+        print("Note: For Fargate collections, this may take longer. Press Ctrl+C to skip monitoring.")
+        max_wait = 1800  # 30 minutes
         wait_time = 10
         interval = 15
         
@@ -158,11 +159,16 @@ def test_s3_data(bucket_name):
 def print_info(text):
     print(f"{BLUE}ℹ️  {text}{NC}")
 
-def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=None):
+def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=None, project_name=None):
     """Collect bills from ALL historical Congresses (1-16)"""
     print_header("Collecting Bills from ALL Historical Congresses (1-16)")
     
     lambda_client = boto3.client('lambda')
+    
+    # Build Lambda function names from project name
+    image_collector_fn = f"{project_name}-image-collector" if project_name else "image-collector"
+    neptune_loader_fn = f"{project_name}-neptune-loader" if project_name else "neptune-loader"
+    kb_sync_fn = f"{project_name}-kb-sync-trigger" if project_name else "kb-sync-trigger"
     
     total_bills = 0
     total_loaded = 0
@@ -195,7 +201,7 @@ def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=No
             try:
                 # Invoke image-collector Lambda
                 response = lambda_client.invoke(
-                    FunctionName='chronicling-america-pipeline-image-collector',
+                    FunctionName=image_collector_fn,
                     InvocationType='RequestResponse',
                     Payload=json.dumps(payload)
                 )
@@ -210,7 +216,7 @@ def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=No
                     # Load to Neptune
                     if result.get('s3_key') and bills_count > 0:
                         neptune_response = lambda_client.invoke(
-                            FunctionName='chronicling-america-pipeline-neptune-loader',
+                            FunctionName=neptune_loader_fn,
                             InvocationType='RequestResponse',
                             Payload=json.dumps({
                                 'bucket': result['bucket'],
@@ -260,7 +266,7 @@ def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=No
         print("Triggering Knowledge Base sync for all collected bills...")
         try:
             kb_response = lambda_client.invoke(
-                FunctionName='chronicling-america-pipeline-kb-sync-trigger',
+                FunctionName=kb_sync_fn,
                 InvocationType='RequestResponse',
                 Payload=json.dumps({})
             )
@@ -569,7 +575,8 @@ Examples:
             
             congress_result = test_all_historical_congresses(
                 bill_types=bill_types,
-                limit_per_congress=limit_per_congress
+                limit_per_congress=limit_per_congress,
+                project_name=project_name
             )
         else:
             # Single Congress test
