@@ -23,7 +23,7 @@ phases:
       - |
         if [ "$ACTION" = "destroy" ]; then
           echo "Destroying stack..."
-          cdk destroy ChroniclingAmericaStack --force \
+          cdk destroy ChroniclingAmericaStackV2 --force \
             --context projectName="$PROJECT_NAME" \
             --context dataBucketName="$DATA_BUCKET_NAME" \
             --context bedrockModelId="$BEDROCK_MODEL_ID"
@@ -33,14 +33,14 @@ phases:
           echo "========================================="
           
           echo "Deploying CDK stack..."
-          cdk deploy ChroniclingAmericaStack --require-approval never \
+          cdk deploy ChroniclingAmericaStackV2 --require-approval never \
             --context projectName="$PROJECT_NAME" \
             --context dataBucketName="$DATA_BUCKET_NAME" \
             --context bedrockModelId="$BEDROCK_MODEL_ID" \
             --outputs-file outputs.json
           
           echo "Extracting outputs..."
-          DATA_BUCKET=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.DataBucketName // empty')
+          DATA_BUCKET=$(cat outputs.json | jq -r '.ChroniclingAmericaStackV2.DataBucketName // empty')
           STATE_MACHINE_ARN=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.StateMachineArn // empty')
           NEPTUNE_ENDPOINT=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.NeptuneEndpoint // empty')
           API_URL=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.APIGatewayURL // empty')

@@ -72,6 +72,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           subnetType: ec2.SubnetType.PUBLIC,
         },
       ],
+      restrictDefaultSecurityGroup: false, // Disable to avoid IAM permission issues
     });
 
     // ========================================

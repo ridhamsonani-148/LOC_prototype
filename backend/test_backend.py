@@ -38,25 +38,31 @@ def get_stack_outputs():
     
     cf = boto3.client('cloudformation')
     
-    try:
-        response = cf.describe_stacks(StackName='ChroniclingAmericaStack')
-        outputs = response['Stacks'][0]['Outputs']
-        
-        result = {}
-        for output in outputs:
-            result[output['OutputKey']] = output['OutputValue']
-        
-        print_success("Stack found")
-        print(f"Data Bucket: {result.get('DataBucketName', 'N/A')}")
-        print(f"State Machine: {result.get('StateMachineArn', 'N/A')}")
-        print(f"Chat Endpoint: {result.get('ChatEndpoint', 'N/A')}")
-        
-        return result
-    except Exception as e:
-        print_error(f"Stack not found: {e}")
-        print("\nPlease deploy the stack first:")
-        print("  cd backend && ./deploy.sh")
-        sys.exit(1)
+    # Try V2 stack first, fall back to V1
+    stack_names = ['ChroniclingAmericaStackV2', 'ChroniclingAmericaStack']
+    
+    for stack_name in stack_names:
+        try:
+            response = cf.describe_stacks(StackName=stack_name)
+            outputs = response['Stacks'][0]['Outputs']
+            
+            result = {}
+            for output in outputs:
+                result[output['OutputKey']] = output['OutputValue']
+            
+            print_success(f"Stack found: {stack_name}")
+            print(f"Data Bucket: {result.get('DataBucketName', 'N/A')}")
+            print(f"State Machine: {result.get('StateMachineArn', 'N/A')}")
+            print(f"Chat Endpoint: {result.get('ChatEndpoint', 'N/A')}")
+            
+            return result
+        except Exception:
+            continue
+    
+    print_error("Stack not found")
+    print("\nPlease deploy the stack first:")
+    print("  cd backend && ./deploy.sh")
+    sys.exit(1)
 
 def test_pipeline_execution(state_machine_arn, source='newspapers', start_date=None, end_date=None, max_pages=None, congress=None, bill_type=None, limit=None):
     """Test Step Functions pipeline execution"""
