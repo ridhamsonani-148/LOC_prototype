@@ -280,7 +280,7 @@ def test_all_historical_congresses(bill_types=['hr', 's'], limit_per_congress=No
     
     return total_bills > 0
 
-def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
+def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None, project_name=None):
     """Test Congress bills collection via Fargate trigger Lambda"""
     print_header("Quick Test: Congress Bills Collection (via Fargate)")
     
@@ -305,7 +305,8 @@ def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
                 result = response.json()
                 print_success(f"Fargate task started: {result.get('taskArn', 'N/A')}")
                 print_info("Task is running asynchronously. Check CloudWatch logs for progress.")
-                print_info(f"Log group: /ecs/chronicling-america-pipeline-collector")
+                log_group = f"/ecs/{project_name}-collector" if project_name else "/ecs/collector"
+                print_info(f"Log group: {log_group}")
                 return True
             else:
                 print_error(f"API returned status {response.status_code}: {response.text}")
@@ -317,6 +318,9 @@ def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
         # Fallback to direct Lambda invocation
         lambda_client = boto3.client('lambda')
         
+        # Get Lambda function name from project name
+        function_name = f"{project_name}-fargate-trigger" if project_name else "fargate-trigger"
+        
         payload = {
             "body": json.dumps({
                 "start_congress": congress,
@@ -326,9 +330,10 @@ def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
         }
         
         try:
+            print(f"\nInvoking Lambda: {function_name}")
             # Invoke fargate-trigger Lambda directly
             response = lambda_client.invoke(
-                FunctionName='chronicling-america-pipeline-fargate-trigger',
+                FunctionName=function_name,
                 InvocationType='RequestResponse',
                 Payload=json.dumps(payload)
             )
@@ -340,7 +345,8 @@ def test_congress_direct(congress=7, bill_type='hr', limit=5, api_url=None):
                 body = json.loads(result.get('body', '{}'))
                 print_success(f"Fargate task started: {body.get('taskArn', 'N/A')}")
                 print_info("Task is running asynchronously. Check CloudWatch logs for progress.")
-                print_info(f"Log group: /ecs/chronicling-america-pipeline-collector")
+                log_group = f"/ecs/{project_name}-collector" if project_name else "/ecs/collector"
+                print_info(f"Log group: {log_group}")
                 return True
             else:
                 print_error(f"Failed to start Fargate task: {result.get('body', 'Unknown')}")
@@ -487,6 +493,24 @@ Examples:
     api_url = outputs.get('ChatEndpoint')
     collect_url = outputs.get('CollectEndpoint')
     
+    # Extract project name from stack outputs (from any resource name)
+    project_name = None
+    for key, value in outputs.items():
+        if 'FargateTaskDefinitionArn' in key or 'ECRRepositoryUri' in key:
+            # Extract project name from ARN or URI
+            if 'task-definition' in value:
+                project_name = value.split('task-definition/')[1].split('-collector')[0]
+            elif '.dkr.ecr.' in value:
+                project_name = value.split('/')[-1].split('-collector')[0]
+            break
+    
+    if not project_name:
+        # Fallback: try to get from bucket name
+        if bucket_name:
+            project_name = bucket_name.split('-data-')[0]
+    
+    print_info(f"Detected project name: {project_name}")
+    
     # Run tests
     results = []
     
@@ -556,7 +580,8 @@ Examples:
                 congress=args.congress or 7,
                 bill_type=args.bill_type or 'hr',
                 limit=args.limit or 5,
-                api_url=collect_url
+                api_url=collect_url,
+                project_name=project_name
             )
         
         if congress_result:
