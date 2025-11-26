@@ -9,19 +9,20 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
+import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import * as path from "path";
 
-export interface SimplifiedStackProps extends cdk.StackProps {
+export interface ChroniclingAmericaStackProps extends cdk.StackProps {
   projectName: string;
   dataBucketName?: string;
 }
 
-export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
+export class ChroniclingAmericaStack extends cdk.Stack {
   constructor(
     scope: Construct,
     id: string,
-    props: SimplifiedStackProps
+    props: ChroniclingAmericaStackProps
   ) {
     super(scope, id, props);
 
@@ -80,16 +81,20 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     });
 
     // ECR Repository for Fargate task image
-    const collectorRepository = new ecr.Repository(this, "CollectorRepository", {
-      repositoryName: `${projectName}-collector`,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [
-        {
-          maxImageCount: 5,
-          description: "Keep only 5 most recent images",
-        },
-      ],
-    });
+    const collectorRepository = new ecr.Repository(
+      this,
+      "CollectorRepository",
+      {
+        repositoryName: `${projectName}-collector`,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        lifecycleRules: [
+          {
+            maxImageCount: 5,
+            description: "Keep only 5 most recent images",
+          },
+        ],
+      }
+    );
 
     // Fargate Task Execution Role
     const fargateExecutionRole = new iam.Role(this, "FargateExecutionRole", {
@@ -132,7 +137,10 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     // Container Definition
     collectorTaskDefinition.addContainer("CollectorContainer", {
       containerName: "collector",
-      image: ecs.ContainerImage.fromEcrRepository(collectorRepository, "latest"),
+      image: ecs.ContainerImage.fromEcrRepository(
+        collectorRepository,
+        "latest"
+      ),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "collector",
         logGroup: collectorLogGroup,
@@ -161,10 +169,7 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     knowledgeBaseRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: [
-          "neptune-graph:*",
-          "neptune-db:*",
-        ],
+        actions: ["neptune-graph:*", "neptune-db:*"],
         resources: ["*"],
       })
     );
@@ -181,49 +186,90 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     );
 
     // ========================================
-    // Bedrock Knowledge Base with Neptune Analytics
+    // Custom Resource Lambda for Automated KB Setup
     // ========================================
-    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, "KnowledgeBase", {
-      name: `${projectName}-knowledge-base`,
-      roleArn: knowledgeBaseRole.roleArn,
-      knowledgeBaseConfiguration: {
-        type: "VECTOR",
-        vectorKnowledgeBaseConfiguration: {
-          embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-        },
-      },
-      storageConfiguration: {
-        type: "NEPTUNE_ANALYTICS",
-        neptuneAnalyticsConfiguration: {
-          // Neptune Analytics graph will be auto-created by Bedrock
-          vectorSearchConfiguration: {
-            vectorField: "embedding",
-          },
-        },
+    const kbSetupRole = new iam.Role(this, "KBSetupRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AWSLambdaBasicExecutionRole"
+        ),
+      ],
+    });
+
+    // Grant permissions to create Neptune Analytics graph
+    kbSetupRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "neptune-graph:CreateGraph",
+          "neptune-graph:DeleteGraph",
+          "neptune-graph:GetGraph",
+          "neptune-graph:ListGraphs",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant permissions to create Bedrock Knowledge Base
+    kbSetupRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:CreateKnowledgeBase",
+          "bedrock:DeleteKnowledgeBase",
+          "bedrock:GetKnowledgeBase",
+          "bedrock:CreateDataSource",
+          "bedrock:DeleteDataSource",
+          "bedrock:GetDataSource",
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant PassRole for Knowledge Base role
+    kbSetupRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [knowledgeBaseRole.roleArn],
+      })
+    );
+
+    const kbSetupFunction = new lambda.DockerImageFunction(
+      this,
+      "KBSetupFunction",
+      {
+        functionName: `${projectName}-kb-setup`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/kb-setup")
+        ),
+        timeout: cdk.Duration.minutes(15),
+        memorySize: 512,
+        role: kbSetupRole,
+      }
+    );
+
+    // Custom Resource to Create KB Automatically
+    const kbSetupProvider = new cr.Provider(this, "KBSetupProvider", {
+      onEventHandler: kbSetupFunction,
+    });
+
+    const kbSetup = new cdk.CustomResource(this, "KBSetup", {
+      serviceToken: kbSetupProvider.serviceToken,
+      properties: {
+        ProjectName: projectName,
+        BucketArn: dataBucket.bucketArn,
+        RoleArn: knowledgeBaseRole.roleArn,
+        Region: this.region,
+        AccountId: this.account,
       },
     });
 
-    // S3 Data Source for Knowledge Base
-    const dataSource = new bedrock.CfnDataSource(this, "DataSource", {
-      name: `${projectName}-s3-datasource`,
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: "S3",
-        s3Configuration: {
-          bucketArn: dataBucket.bucketArn,
-          inclusionPrefixes: ["extracted/"], // Only sync files in extracted/ folder
-        },
-      },
-      vectorIngestionConfiguration: {
-        chunkingConfiguration: {
-          chunkingStrategy: "FIXED_SIZE",
-          fixedSizeChunkingConfiguration: {
-            maxTokens: 1000,
-            overlapPercentage: 20,
-          },
-        },
-      },
-    });
+    // Get KB attributes (these will be available after KB creation)
+    const knowledgeBaseId = kbSetup.getAttString("KnowledgeBaseId");
+    const dataSourceId = kbSetup.getAttString("DataSourceId");
+    const graphId = kbSetup.getAttString("GraphId");
 
     // ========================================
     // Lambda Execution Role
@@ -241,11 +287,7 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     lambdaRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: [
-          "ecs:RunTask",
-          "ecs:DescribeTasks",
-          "ecs:StopTask",
-        ],
+        actions: ["ecs:RunTask", "ecs:DescribeTasks", "ecs:StopTask"],
         resources: ["*"],
       })
     );
@@ -255,10 +297,7 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["iam:PassRole"],
-        resources: [
-          fargateExecutionRole.roleArn,
-          fargateTaskRole.roleArn,
-        ],
+        resources: [fargateExecutionRole.roleArn, fargateTaskRole.roleArn],
       })
     );
 
@@ -350,12 +389,15 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
         memorySize: 256,
         role: lambdaRole,
         environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-          DATA_SOURCE_ID: dataSource.attrDataSourceId,
+          KNOWLEDGE_BASE_ID: knowledgeBaseId,
+          DATA_SOURCE_ID: dataSourceId,
         },
         logGroup: kbSyncTriggerLogGroup,
       }
     );
+
+    // Ensure KB sync trigger is created after KB setup completes
+    kbSyncTriggerFunction.node.addDependency(kbSetup);
 
     // Add S3 event notification to trigger KB sync when files are added
     dataBucket.addEventNotification(
@@ -383,11 +425,15 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
         memorySize: 1024,
         role: lambdaRole,
         environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+          KNOWLEDGE_BASE_ID: knowledgeBaseId,
+          MODEL_ID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
         },
         logGroup: chatHandlerLogGroup,
       }
     );
+
+    // Ensure chat handler is created after KB setup completes
+    chatHandlerFunction.node.addDependency(kbSetup);
 
     // ========================================
     // API Gateway for Chat UI
@@ -430,15 +476,21 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, "KnowledgeBaseId", {
-      value: knowledgeBase.attrKnowledgeBaseId,
-      description: "Bedrock Knowledge Base ID",
+      value: knowledgeBaseId,
+      description: "Bedrock Knowledge Base ID (auto-created)",
       exportName: `${projectName}-kb-id`,
     });
 
     new cdk.CfnOutput(this, "DataSourceId", {
-      value: dataSource.attrDataSourceId,
-      description: "Bedrock Data Source ID",
+      value: dataSourceId,
+      description: "Bedrock Data Source ID (auto-created)",
       exportName: `${projectName}-ds-id`,
+    });
+
+    new cdk.CfnOutput(this, "NeptuneGraphId", {
+      value: graphId,
+      description: "Neptune Analytics Graph ID (auto-created)",
+      exportName: `${projectName}-graph-id`,
     });
 
     new cdk.CfnOutput(this, "APIGatewayURL", {
@@ -467,6 +519,16 @@ export class SimplifiedChroniclingAmericaStack extends cdk.Stack {
       value: collectorTaskDefinition.taskDefinitionArn,
       description: "Fargate task definition ARN",
       exportName: `${projectName}-fargate-task`,
+    });
+
+    new cdk.CfnOutput(this, "KBSetupStatus", {
+      value: "Knowledge Base created automatically via Custom Resource",
+      description: "KB setup status",
+    });
+
+    new cdk.CfnOutput(this, "ExtractedDataPrefix", {
+      value: `s3://${dataBucket.bucketName}/extracted/`,
+      description: "S3 prefix where Fargate saves extracted bill text",
     });
   }
 }
