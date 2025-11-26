@@ -16,6 +16,7 @@ import * as path from "path";
 export interface ChroniclingAmericaStackProps extends cdk.StackProps {
   projectName: string;
   dataBucketName?: string;
+  bedrockModelId?: string;
 }
 
 export class ChroniclingAmericaStack extends cdk.Stack {
@@ -27,6 +28,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     super(scope, id, props);
 
     const projectName = props.projectName;
+    const bedrockModelId =
+      props.bedrockModelId || "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
     // ========================================
     // S3 Bucket for Data Storage
@@ -426,7 +429,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         role: lambdaRole,
         environment: {
           KNOWLEDGE_BASE_ID: knowledgeBaseId,
-          MODEL_ID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+          MODEL_ID: bedrockModelId,
         },
         logGroup: chatHandlerLogGroup,
       }
@@ -529,6 +532,11 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ExtractedDataPrefix", {
       value: `s3://${dataBucket.bucketName}/extracted/`,
       description: "S3 prefix where Fargate saves extracted bill text",
+    });
+
+    new cdk.CfnOutput(this, "BedrockModelId", {
+      value: bedrockModelId,
+      description: "Bedrock model ID used for chat responses",
     });
   }
 }
