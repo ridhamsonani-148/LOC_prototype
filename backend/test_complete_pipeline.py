@@ -131,9 +131,20 @@ def trigger_fargate_collection(resources, congress=7, bill_type='hr'):
             task_arn = body.get('taskArn', 'N/A')
             print_success(f"Fargate task started!")
             print(f"Task ARN: {task_arn}")
+            print_info("Task is collecting bills from Congress API...")
             return task_arn
         else:
-            print_error(f"Failed to start task: {result.get('body', 'Unknown')}")
+            error_body = result.get('body', '{}')
+            if isinstance(error_body, str):
+                error_body = json.loads(error_body)
+            error_msg = error_body.get('error', 'Unknown error')
+            print_error(f"Failed to start task: {error_msg}")
+            
+            if 'SECURITY_GROUP_ID' in error_msg:
+                print_warning("The Fargate trigger Lambda is missing SECURITY_GROUP_ID")
+                print_info("Solution: Redeploy the stack with the updated CDK:")
+                print("  cd backend && ./deploy.sh")
+            
             return None
             
     except Exception as e:
@@ -150,6 +161,11 @@ def wait_for_s3_data(resources, max_wait=300):
     print(f"Checking bucket: {bucket}")
     print(f"Looking for files in: extracted/")
     print(f"Max wait time: {max_wait}s")
+    print("")
+    print_info("Fargate task is:")
+    print("  1. Calling Congress API")
+    print("  2. Extracting bill text")
+    print("  3. Uploading to S3")
     print("")
     
     elapsed = 0
@@ -183,7 +199,9 @@ def wait_for_s3_data(resources, max_wait=300):
         elapsed += interval
     
     print_warning(f"No files found after {max_wait}s")
-    print_info("Check CloudWatch logs for Fargate task status")
+    print_info("Check CloudWatch logs for Fargate task status:")
+    print(f"  Log group: /ecs/{resources['project_name']}-collector")
+    print(f"  aws logs tail /ecs/{resources['project_name']}-collector --follow")
     return False
 
 def trigger_kb_sync(resources):
@@ -343,14 +361,24 @@ def main():
     task_arn = trigger_fargate_collection(resources, congress=7, bill_type='hr')
     if not task_arn:
         print_error("Failed to start Fargate task")
+        print("")
+        print_info("If you see 'SECURITY_GROUP_ID' error, redeploy the stack:")
+        print("  cd backend && ./deploy.sh")
+        print("")
+        print_info("The CDK stack has been updated to include the security group.")
         sys.exit(1)
     
     # Step 3: Wait for S3 data
     print_info("Waiting for Fargate task to collect and upload data...")
     if not wait_for_s3_data(resources, max_wait=300):
         print_error("No data appeared in S3")
-        print_info("Check CloudWatch logs:")
-        print(f"  Log group: /ecs/{resources['project_name']}-collector")
+        print("")
+        print_info("Troubleshooting:")
+        print("  1. Check Fargate task logs:")
+        print(f"     aws logs tail /ecs/{resources['project_name']}-collector --follow")
+        print("  2. Check task status:")
+        print(f"     aws ecs list-tasks --cluster {resources['project_name']}-cluster")
+        print("  3. Verify Congress API is accessible")
         sys.exit(1)
     
     # Step 4: Trigger KB sync

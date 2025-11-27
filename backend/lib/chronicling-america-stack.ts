@@ -191,7 +191,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // ========================================
     // Knowledge Base will be created via CLI in buildspec.yml
     // ========================================
-    
+
     // Placeholder values - will be updated by CLI after KB creation
     const knowledgeBaseId = "PLACEHOLDER_KB_ID";
     const dataSourceId = "PLACEHOLDER_DS_ID";
@@ -267,6 +267,17 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
+    // Create security group for Fargate tasks
+    const fargateSecurityGroup = new ec2.SecurityGroup(
+      this,
+      "FargateSecurityGroup",
+      {
+        vpc,
+        description: "Security group for Fargate collector tasks",
+        allowAllOutbound: true,
+      }
+    );
+
     const fargateTriggerFunction = new lambda.DockerImageFunction(
       this,
       "FargateTriggerFunction",
@@ -282,6 +293,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           ECS_CLUSTER_NAME: ecsCluster.clusterName,
           TASK_DEFINITION_ARN: collectorTaskDefinition.taskDefinitionArn,
           SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
+          SECURITY_GROUP_ID: fargateSecurityGroup.securityGroupId,
           BUCKET_NAME: dataBucket.bucketName,
           START_CONGRESS: "1",
           END_CONGRESS: "16",
@@ -427,8 +439,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Fargate task definition ARN",
       exportName: `${projectName}-fargate-task`,
     });
-
-
 
     new cdk.CfnOutput(this, "ExtractedDataPrefix", {
       value: `s3://${dataBucket.bucketName}/extracted/`,
