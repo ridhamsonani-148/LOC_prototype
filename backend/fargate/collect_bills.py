@@ -156,13 +156,20 @@ class BillCollector:
 
 """
             full_content = header + text_content
+            content_bytes = full_content.encode('utf-8')
+            size_mb = len(content_bytes) / (1024 * 1024)
+            
+            # Check file size (KB has 50MB limit)
+            if size_mb > 50:
+                self.log(f"  ✗ File too large: {size_mb:.2f}MB (KB limit is 50MB)")
+                return False
             
             # Save to S3
             key = f"extracted/congress_{congress_num}/{bill_type}_{bill_number}.txt"
             s3.put_object(
                 Bucket=BUCKET_NAME,
                 Key=key,
-                Body=full_content.encode('utf-8'),
+                Body=content_bytes,
                 ContentType='text/plain',
                 Metadata={
                     'congress': str(congress_num),
@@ -172,7 +179,7 @@ class BillCollector:
                 }
             )
             
-            self.log(f"  ✓ Saved to S3: {key}")
+            self.log(f"  ✓ Saved to S3: {key} ({size_mb:.2f}MB)")
             return True
             
         except Exception as e:
