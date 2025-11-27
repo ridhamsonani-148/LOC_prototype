@@ -297,7 +297,7 @@ def wait_for_kb_sync(resources, job_id, max_wait=600):
     print_info("Check AWS Console → Bedrock → Knowledge Bases for status")
     return None
 
-def test_query(resources, question):
+def test_query(resources, question, model_arn=None):
     """Step 6: Test querying the Knowledge Base"""
     print_header("Step 6: Testing Knowledge Base Query")
     
@@ -305,7 +305,12 @@ def test_query(resources, question):
     
     kb_id = resources['kb_id']
     
+    # Use provided model ARN or default to inference profile
+    if not model_arn:
+        model_arn = 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+    
     print(f"Question: {question}")
+    print(f"Model: {model_arn}")
     print("")
     
     try:
@@ -315,7 +320,7 @@ def test_query(resources, question):
                 'type': 'KNOWLEDGE_BASE',
                 'knowledgeBaseConfiguration': {
                     'knowledgeBaseId': kb_id,
-                    'modelArn': 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+                    'modelArn': model_arn
                 }
             }
         )
@@ -381,40 +386,32 @@ def main():
         print("  3. Verify Congress API is accessible")
         sys.exit(1)
     
-    # Step 4: Trigger KB sync
-    job_id = trigger_kb_sync(resources)
-    if not job_id:
-        print_error("Failed to start Knowledge Base sync")
-        sys.exit(1)
+    # Step 4: Wait for Fargate to complete and trigger KB sync
+    print_header("Step 4: Waiting for Fargate Task to Complete")
+    print_info("Fargate task will:")
+    print("  1. Finish collecting all bills")
+    print("  2. Upload all files to S3")
+    print("  3. Automatically trigger KB sync")
+    print("")
+    print_info("This may take 5-15 minutes total")
+    print_info("You can monitor:")
+    print(f"  - Fargate logs: aws logs tail /ecs/{resources['project_name']}-collector --follow")
+    print(f"  - S3 files: aws s3 ls s3://{resources['data_bucket']}/extracted/")
+    print("")
+    print_success("Pipeline triggered successfully!")
+    print("")
+    print_info("To check KB sync status later:")
+    print(f"  aws bedrock-agent list-ingestion-jobs \\")
+    print(f"    --knowledge-base-id {resources['kb_id']} \\")
+    print(f"    --data-source-id {resources['ds_id']} \\")
+    print(f"    --region us-east-1")
+    print("")
     
-    # Step 5: Wait for KB sync
-    print_info("This may take 5-10 minutes for entity extraction...")
-    if not wait_for_kb_sync(resources, job_id, max_wait=600):
-        print_error("Knowledge Base sync did not complete")
-        sys.exit(1)
+    # Don't wait or test queries - let Fargate handle everything
+    return
     
-    # Step 6: Test queries
-    test_questions = [
-        "What bills were introduced in Congress 7?",
-        "Who are the people mentioned in the bills?",
-        "Summarize the legislation from this Congress"
-    ]
-    
-    for question in test_questions:
-        test_query(resources, question)
-        print("")
-        time.sleep(2)
-    
-    # Summary
-    print_header("✅ Complete Pipeline Test Successful!")
-    
-    print("The full pipeline is working:")
-    print("  1. ✅ Fargate task collected data from Congress API")
-    print("  2. ✅ Data uploaded to S3 (extracted/ folder)")
-    print("  3. ✅ Knowledge Base synced and indexed documents")
-    print("  4. ✅ Entity extraction completed (Claude 3 Haiku)")
-    print("  5. ✅ Graph built in Neptune Analytics")
-    print("  6. ✅ Queries working with context enrichment")
+    # Step 6: Test queries (removed - will be done after Fargate completes)
+    # Summary removed - Fargate handles everything automatically
     
     print(f"\n{BLUE}Next Steps:{NC}")
     print("1. Collect more data:")
