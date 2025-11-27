@@ -117,6 +117,19 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // Grant S3 permissions to Fargate task
     dataBucket.grantReadWrite(fargateTaskRole);
 
+    // Grant Bedrock permissions to Fargate task (for triggering KB sync)
+    fargateTaskRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob",
+          "bedrock:ListIngestionJobs",
+        ],
+        resources: ["*"],
+      })
+    );
+
     // Fargate Task Definition
     const collectorTaskDefinition = new ecs.FargateTaskDefinition(
       this,
