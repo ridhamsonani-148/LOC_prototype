@@ -312,6 +312,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           START_CONGRESS: "1",
           END_CONGRESS: "16",
           BILL_TYPES: "hr,s",
+          KNOWLEDGE_BASE_ID: knowledgeBaseId,
+          DATA_SOURCE_ID: dataSourceId,
         },
         logGroup: fargateTriggerLogGroup,
       }
