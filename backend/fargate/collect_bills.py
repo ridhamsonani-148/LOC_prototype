@@ -299,6 +299,39 @@ class BillCollector:
         
         return 0 if self.failed == 0 else 1
 
+def trigger_kb_sync():
+    """Trigger Knowledge Base sync after collection completes"""
+    try:
+        # Get KB IDs from environment or use defaults
+        kb_id = os.environ.get('KNOWLEDGE_BASE_ID')
+        ds_id = os.environ.get('DATA_SOURCE_ID')
+        
+        if not kb_id or not ds_id:
+            print("⚠️  KB sync skipped: KNOWLEDGE_BASE_ID or DATA_SOURCE_ID not set")
+            return
+        
+        print(f"\n{'='*60}")
+        print("Triggering Knowledge Base Sync")
+        print(f"{'='*60}")
+        print(f"Knowledge Base ID: {kb_id}")
+        print(f"Data Source ID: {ds_id}")
+        
+        bedrock_agent = boto3.client('bedrock-agent')
+        
+        response = bedrock_agent.start_ingestion_job(
+            knowledgeBaseId=kb_id,
+            dataSourceId=ds_id
+        )
+        
+        job_id = response['ingestionJob']['ingestionJobId']
+        print(f"✓ Ingestion job started: {job_id}")
+        print(f"Entity extraction will complete in 5-10 minutes")
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"⚠️  Failed to trigger KB sync: {e}")
+        print("You can trigger it manually later")
+
 if __name__ == '__main__':
     if not BUCKET_NAME:
         print("ERROR: BUCKET_NAME environment variable not set")
@@ -306,4 +339,9 @@ if __name__ == '__main__':
     
     collector = BillCollector()
     exit_code = collector.run()
+    
+    # Trigger KB sync after successful collection
+    if exit_code == 0:
+        trigger_kb_sync()
+    
     sys.exit(exit_code)

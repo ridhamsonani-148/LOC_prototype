@@ -24,6 +24,24 @@ def lambda_handler(event, context):
         security_group_id = os.environ['SECURITY_GROUP_ID']
         bucket_name = os.environ['BUCKET_NAME']
         
+        # Get KB IDs (optional - will be set after deployment)
+        kb_id = os.environ.get('KNOWLEDGE_BASE_ID', '')
+        ds_id = os.environ.get('DATA_SOURCE_ID', '')
+        
+        # Build environment variables for container
+        container_env = [
+            {'name': 'BUCKET_NAME', 'value': bucket_name},
+            {'name': 'START_CONGRESS', 'value': str(start_congress)},
+            {'name': 'END_CONGRESS', 'value': str(end_congress)},
+            {'name': 'BILL_TYPES', 'value': bill_types},
+        ]
+        
+        # Add KB IDs if available
+        if kb_id:
+            container_env.append({'name': 'KNOWLEDGE_BASE_ID', 'value': kb_id})
+        if ds_id:
+            container_env.append({'name': 'DATA_SOURCE_ID', 'value': ds_id})
+        
         # Start Fargate task
         response = ecs_client.run_task(
             cluster=cluster_name,
@@ -40,12 +58,7 @@ def lambda_handler(event, context):
                 'containerOverrides': [
                     {
                         'name': 'collector',
-                        'environment': [
-                            {'name': 'BUCKET_NAME', 'value': bucket_name},
-                            {'name': 'START_CONGRESS', 'value': str(start_congress)},
-                            {'name': 'END_CONGRESS', 'value': str(end_congress)},
-                            {'name': 'BILL_TYPES', 'value': bill_types},
-                        ]
+                        'environment': container_env
                     }
                 ]
             }

@@ -177,13 +177,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
-    // Grant Bedrock model access
+    // Grant Bedrock model access (for embeddings and entity extraction)
     knowledgeBaseRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["bedrock:InvokeModel"],
         resources: [
           `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+          `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
         ],
       })
     );
@@ -333,12 +334,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // Add S3 event notification to trigger KB sync when files are added
-    dataBucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      new s3n.LambdaDestination(kbSyncTriggerFunction),
-      { prefix: "extracted/", suffix: ".txt" }
-    );
+    // Note: S3 event notification removed to avoid triggering KB sync for each file
+    // KB sync should be triggered manually after all files are collected
+    // Or triggered by the Fargate task when collection is complete
+    
+    // Uncomment below to enable auto-sync (will trigger for EACH file):
+    // dataBucket.addEventNotification(
+    //   s3.EventType.OBJECT_CREATED,
+    //   new s3n.LambdaDestination(kbSyncTriggerFunction),
+    //   { prefix: "extracted/", suffix: ".txt" }
+    // );
 
     // 3. Chat Handler Lambda
     const chatHandlerLogGroup = new logs.LogGroup(this, "ChatHandlerLogGroup", {
