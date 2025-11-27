@@ -132,8 +132,8 @@ phases:
           
           echo "✓ Knowledge Base created: $KB_ID"
           
-          # Step 4: Create Data Source
-          echo "Step 4: Creating Data Source..."
+          # Step 4: Create Data Source with Context Enrichment
+          echo "Step 4: Creating Data Source with Context Enrichment..."
           BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
           
           DS_ID=$(aws bedrock-agent create-data-source \
@@ -154,6 +154,9 @@ phases:
                   "maxTokens": 1000,
                   "overlapPercentage": 20
                 }
+              },
+              "contextEnrichmentConfiguration": {
+                "enabled": true
               }
             }' \
             --region "$CDK_DEFAULT_REGION" \
