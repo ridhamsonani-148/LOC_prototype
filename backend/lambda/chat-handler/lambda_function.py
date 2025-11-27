@@ -13,9 +13,10 @@ from botocore.exceptions import ClientError
 bedrock_runtime = boto3.client('bedrock-runtime')
 bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
 
-NEPTUNE_ENDPOINT = os.environ['NEPTUNE_ENDPOINT']
+# Neptune Analytics is accessed through Knowledge Base, not directly
+NEPTUNE_ENDPOINT = os.environ.get('NEPTUNE_ENDPOINT', 'N/A')  # Not used with KB
 NEPTUNE_PORT = os.environ.get('NEPTUNE_PORT', '8182')
-BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+BEDROCK_MODEL_ID = os.environ.get('BEDROCK_MODEL_ID', 'anthropic.claude-3-5-sonnet-20241022-v2:0')
 KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')  # Set this after creating KB
 
 def lambda_handler(event, context):
@@ -65,9 +66,18 @@ def lambda_handler(event, context):
         if KNOWLEDGE_BASE_ID:
             response = query_knowledge_base(question)
         else:
-            # Fallback to direct Neptune query if KB not configured
-            print("WARNING: KNOWLEDGE_BASE_ID not set, using direct Neptune query")
-            response = answer_question_direct_neptune(question)
+            # KB not configured yet
+            print("ERROR: KNOWLEDGE_BASE_ID not set")
+            return {
+                'statusCode': 503,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': 'Knowledge Base not configured yet. Please run the deployment pipeline first.'
+                })
+            }
         
         return {
             'statusCode': 200,

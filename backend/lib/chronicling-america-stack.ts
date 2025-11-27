@@ -352,7 +352,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     // Note: S3 event notification removed to avoid triggering KB sync for each file
     // KB sync should be triggered manually after all files are collected
     // Or triggered by the Fargate task when collection is complete
-    
+
     // Uncomment below to enable auto-sync (will trigger for EACH file):
     // dataBucket.addEventNotification(
     //   s3.EventType.OBJECT_CREATED,
