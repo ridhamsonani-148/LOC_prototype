@@ -199,13 +199,14 @@ phases:
           echo "Data Source ID: $DS_ID"
           echo "Data Bucket: $DATA_BUCKET"
           echo "========================================="
+          
+          # Extract optional outputs (may not exist in all stacks)
           STATE_MACHINE_ARN=$(cat outputs.json | jq -r '.LOCstack.StateMachineArn // empty')
-          NEPTUNE_ENDPOINT=$(cat outputs.json | jq -r '.LOCstack.NeptuneEndpoint // empty')
           API_URL=$(cat outputs.json | jq -r '.LOCstack.APIGatewayURL // empty')
           CHAT_ENDPOINT=$(cat outputs.json | jq -r '.LOCstack.ChatEndpoint // empty')
           
-          if [ -z "$DATA_BUCKET" ] || [ -z "$STATE_MACHINE_ARN" ]; then
-            echo "❌ ERROR: Could not extract required outputs from CDK deployment"
+          if [ -z "$DATA_BUCKET" ]; then
+            echo "❌ ERROR: Could not extract Data Bucket from CDK deployment"
             exit 1
           fi
           
@@ -215,46 +216,55 @@ phases:
           echo "Deployment Summary"
           echo "========================================="
           echo "Data Bucket: $DATA_BUCKET"
-          echo "State Machine ARN: $STATE_MACHINE_ARN"
-          echo "Neptune Endpoint: $NEPTUNE_ENDPOINT"
-          echo "API Gateway URL: $API_URL"
-          echo "Chat Endpoint: $CHAT_ENDPOINT"
+          echo "Graph ID: $GRAPH_ID"
+          echo "Knowledge Base ID: $KB_ID"
+          echo "Data Source ID: $DS_ID"
+          
+          if [ -n "$STATE_MACHINE_ARN" ]; then
+            echo "State Machine ARN: $STATE_MACHINE_ARN"
+          fi
+          
+          if [ -n "$API_URL" ]; then
+            echo "API Gateway URL: $API_URL"
+          fi
+          
+          if [ -n "$CHAT_ENDPOINT" ]; then
+            echo "Chat Endpoint: $CHAT_ENDPOINT"
+          fi
           echo ""
           echo "========================================="
           echo "Next Steps"
           echo "========================================="
-          echo "1. Start pipeline execution:"
-          echo "   aws stepfunctions start-execution \\"
-          echo "     --state-machine-arn $STATE_MACHINE_ARN \\"
-          echo "     --input '{\"start_date\":\"1815-08-01\",\"end_date\":\"1815-08-31\",\"max_pages\":10}'"
-          echo ""
-          echo "2. Test chat API:"
-          echo "   curl -X POST $CHAT_ENDPOINT \\"
-          echo "     -H 'Content-Type: application/json' \\"
-          echo "     -d '{\"question\":\"Who are the people mentioned?\"}'"
-          echo ""
-          echo "3. Monitor execution:"
-          echo "   - Step Functions: https://console.aws.amazon.com/states/home"
-          echo "   - CloudWatch Logs: https://console.aws.amazon.com/cloudwatch/home"
-          echo "   - Neptune: https://console.aws.amazon.com/neptune/home"
-          echo ""
           
-          # Auto-start pipeline after deployment
-          echo "========================================="
-          echo "Auto-Starting Pipeline"
-          echo "========================================="
-          EXECUTION_ARN=$(aws stepfunctions start-execution \
-            --state-machine-arn $STATE_MACHINE_ARN \
-            --input '{"start_date":"1815-08-01","end_date":"1815-08-31","max_pages":10}' \
-            --region $AWS_DEFAULT_REGION \
-            --query 'executionArn' \
-            --output text)
+          if [ -n "$STATE_MACHINE_ARN" ]; then
+            echo "1. Start pipeline execution:"
+            echo "   aws stepfunctions start-execution \\"
+            echo "     --state-machine-arn $STATE_MACHINE_ARN \\"
+            echo "     --input '{\"start_date\":\"1815-08-01\",\"end_date\":\"1815-08-31\",\"max_pages\":10}'"
+            echo ""
+          fi
           
-          echo "✅ Pipeline execution started!"
-          echo "Execution ARN: $EXECUTION_ARN"
+          if [ -n "$CHAT_ENDPOINT" ]; then
+            echo "2. Test chat API:"
+            echo "   curl -X POST $CHAT_ENDPOINT \\"
+            echo "     -H 'Content-Type: application/json' \\"
+            echo "     -d '{\"question\":\"Who are the people mentioned?\"}'"
+            echo ""
+          fi
+          
+          echo "3. Upload documents to S3:"
+          echo "   aws s3 cp document.txt s3://${DATA_BUCKET}/extracted/"
           echo ""
-          echo "Monitor progress:"
-          echo "  aws stepfunctions describe-execution --execution-arn $EXECUTION_ARN"
+          echo "4. Trigger Knowledge Base sync:"
+          echo "   aws bedrock-agent start-ingestion-job \\"
+          echo "     --knowledge-base-id $KB_ID \\"
+          echo "     --data-source-id $DS_ID \\"
+          echo "     --region $CDK_DEFAULT_REGION"
+          echo ""
+          echo "5. Monitor resources:"
+          echo "   - Knowledge Base: https://console.aws.amazon.com/bedrock/home?region=${CDK_DEFAULT_REGION}#/knowledge-bases"
+          echo "   - Neptune Analytics: https://console.aws.amazon.com/neptune-analytics/home?region=${CDK_DEFAULT_REGION}"
+          echo "   - S3 Bucket: https://s3.console.aws.amazon.com/s3/buckets/${DATA_BUCKET}"
           echo ""
         fi
 
