@@ -49,12 +49,13 @@ phases:
           echo "Creating Knowledge Base Resources"
           echo "========================================="
           
-          # Step 1: Create Neptune Analytics Graph
-          echo "Step 1: Creating Neptune Analytics graph..."
+          # Step 1: Create Neptune Analytics Graph with Vector Search
+          echo "Step 1: Creating Neptune Analytics graph (16 m-NCUs) with Vector Search..."
           GRAPH_ID=$(aws neptune-graph create-graph \
             --graph-name "${PROJECT_NAME}-graph" \
-            --provisioned-memory 128 \
+            --provisioned-memory 16 \
             --no-public-connectivity \
+            --vector-search-configuration '{"dimension":1024}' \
             --tags Project="$PROJECT_NAME" \
             --region "$CDK_DEFAULT_REGION" \
             --query 'id' --output text)
