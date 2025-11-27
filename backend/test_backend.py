@@ -38,8 +38,8 @@ def get_stack_outputs():
     
     cf = boto3.client('cloudformation')
     
-    # Try V2 stack first, fall back to V1
-    stack_names = ['ChroniclingAmericaStackV2', 'ChroniclingAmericaStack']
+    # Try LOCstack first, fall back to old names
+    stack_names = ['LOCstack', 'ChroniclingAmericaStackV2', 'ChroniclingAmericaStack']
     
     for stack_name in stack_names:
         try:

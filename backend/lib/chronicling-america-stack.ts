@@ -9,7 +9,6 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
-import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -190,90 +189,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     );
 
     // ========================================
-    // Custom Resource Lambda for Automated KB Setup
+    // Knowledge Base will be created via CLI in buildspec.yml
     // ========================================
-    const kbSetupRole = new iam.Role(this, "KBSetupRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AWSLambdaBasicExecutionRole"
-        ),
-      ],
-    });
-
-    // Grant permissions to create Neptune Analytics graph
-    kbSetupRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "neptune-graph:CreateGraph",
-          "neptune-graph:DeleteGraph",
-          "neptune-graph:GetGraph",
-          "neptune-graph:ListGraphs",
-        ],
-        resources: ["*"],
-      })
-    );
-
-    // Grant permissions to create Bedrock Knowledge Base
-    kbSetupRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "bedrock:CreateKnowledgeBase",
-          "bedrock:DeleteKnowledgeBase",
-          "bedrock:GetKnowledgeBase",
-          "bedrock:CreateDataSource",
-          "bedrock:DeleteDataSource",
-          "bedrock:GetDataSource",
-        ],
-        resources: ["*"],
-      })
-    );
-
-    // Grant PassRole for Knowledge Base role
-    kbSetupRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["iam:PassRole"],
-        resources: [knowledgeBaseRole.roleArn],
-      })
-    );
-
-    const kbSetupFunction = new lambda.DockerImageFunction(
-      this,
-      "KBSetupFunction",
-      {
-        functionName: `${projectName}-kb-setup`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/kb-setup")
-        ),
-        timeout: cdk.Duration.minutes(15),
-        memorySize: 512,
-        role: kbSetupRole,
-      }
-    );
-
-    // Custom Resource to Create KB Automatically
-    const kbSetupProvider = new cr.Provider(this, "KBSetupProvider", {
-      onEventHandler: kbSetupFunction,
-    });
-
-    const kbSetup = new cdk.CustomResource(this, "KBSetup", {
-      serviceToken: kbSetupProvider.serviceToken,
-      properties: {
-        ProjectName: projectName,
-        BucketArn: dataBucket.bucketArn,
-        RoleArn: knowledgeBaseRole.roleArn,
-        Region: this.region,
-        AccountId: this.account,
-      },
-    });
-
-    // Get KB attributes (these will be available after KB creation)
-    const knowledgeBaseId = kbSetup.getAttString("KnowledgeBaseId");
-    const dataSourceId = kbSetup.getAttString("DataSourceId");
-    const graphId = kbSetup.getAttString("GraphId");
+    
+    // Placeholder values - will be updated by CLI after KB creation
+    const knowledgeBaseId = "PLACEHOLDER_KB_ID";
+    const dataSourceId = "PLACEHOLDER_DS_ID";
 
     // ========================================
     // Lambda Execution Role
@@ -400,9 +321,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    // Ensure KB sync trigger is created after KB setup completes
-    kbSyncTriggerFunction.node.addDependency(kbSetup);
-
     // Add S3 event notification to trigger KB sync when files are added
     dataBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -429,15 +347,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         memorySize: 1024,
         role: lambdaRole,
         environment: {
-          KNOWLEDGE_BASE_ID: knowledgeBaseId,
+          KNOWLEDGE_BASE_ID: knowledgeBaseId, // Will be updated by CLI
           MODEL_ID: bedrockModelId,
         },
         logGroup: chatHandlerLogGroup,
       }
     );
-
-    // Ensure chat handler is created after KB setup completes
-    chatHandlerFunction.node.addDependency(kbSetup);
 
     // ========================================
     // API Gateway for Chat UI
@@ -479,22 +394,10 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       exportName: `${projectName}-data-bucket`,
     });
 
-    new cdk.CfnOutput(this, "KnowledgeBaseId", {
-      value: knowledgeBaseId,
-      description: "Bedrock Knowledge Base ID (auto-created)",
-      exportName: `${projectName}-kb-id`,
-    });
-
-    new cdk.CfnOutput(this, "DataSourceId", {
-      value: dataSourceId,
-      description: "Bedrock Data Source ID (auto-created)",
-      exportName: `${projectName}-ds-id`,
-    });
-
-    new cdk.CfnOutput(this, "NeptuneGraphId", {
-      value: graphId,
-      description: "Neptune Analytics Graph ID (auto-created)",
-      exportName: `${projectName}-graph-id`,
+    new cdk.CfnOutput(this, "KnowledgeBaseRoleArn", {
+      value: knowledgeBaseRole.roleArn,
+      description: "IAM role ARN for Bedrock Knowledge Base",
+      exportName: `${projectName}-kb-role`,
     });
 
     new cdk.CfnOutput(this, "APIGatewayURL", {
@@ -525,10 +428,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       exportName: `${projectName}-fargate-task`,
     });
 
-    new cdk.CfnOutput(this, "KBSetupStatus", {
-      value: "Knowledge Base created automatically via Custom Resource",
-      description: "KB setup status",
-    });
+
 
     new cdk.CfnOutput(this, "ExtractedDataPrefix", {
       value: `s3://${dataBucket.bucketName}/extracted/`,

@@ -23,7 +23,7 @@ phases:
       - |
         if [ "$ACTION" = "destroy" ]; then
           echo "Destroying stack..."
-          cdk destroy ChroniclingAmericaStackV2 --force \
+          cdk destroy LOCstack --force \
             --context projectName="$PROJECT_NAME" \
             --context dataBucketName="$DATA_BUCKET_NAME" \
             --context bedrockModelId="$BEDROCK_MODEL_ID"
@@ -32,19 +32,143 @@ phases:
           echo "Deploying Chronicling America Pipeline"
           echo "========================================="
           
-          echo "Deploying CDK stack..."
-          cdk deploy ChroniclingAmericaStackV2 --require-approval never \
+          echo "Deploying CDK stack (without KB)..."
+          cdk deploy LOCstack --require-approval never \
             --context projectName="$PROJECT_NAME" \
             --context dataBucketName="$DATA_BUCKET_NAME" \
             --context bedrockModelId="$BEDROCK_MODEL_ID" \
             --outputs-file outputs.json
           
           echo "Extracting outputs..."
-          DATA_BUCKET=$(cat outputs.json | jq -r '.ChroniclingAmericaStackV2.DataBucketName // empty')
-          STATE_MACHINE_ARN=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.StateMachineArn // empty')
-          NEPTUNE_ENDPOINT=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.NeptuneEndpoint // empty')
-          API_URL=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.APIGatewayURL // empty')
-          CHAT_ENDPOINT=$(cat outputs.json | jq -r '.ChroniclingAmericaStack.ChatEndpoint // empty')
+          DATA_BUCKET=$(cat outputs.json | jq -r '.LOCstack.DataBucketName // empty')
+          KB_ROLE_ARN=$(cat outputs.json | jq -r '.LOCstack.KnowledgeBaseRoleArn // empty')
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          
+          echo ""
+          echo "========================================="
+          echo "Creating Knowledge Base Resources"
+          echo "========================================="
+          
+          # Step 1: Create Neptune Analytics Graph
+          echo "Step 1: Creating Neptune Analytics graph..."
+          GRAPH_ID=$(aws neptune-graph create-graph \
+            --graph-name "${PROJECT_NAME}-graph" \
+            --provisioned-memory 128 \
+            --public-connectivity false \
+            --tags Project="$PROJECT_NAME" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'id' --output text)
+          
+          echo "✓ Graph created: $GRAPH_ID"
+          GRAPH_ARN="arn:aws:neptune-graph:${CDK_DEFAULT_REGION}:${AWS_ACCOUNT_ID}:graph/${GRAPH_ID}"
+          
+          # Step 2: Wait for graph to be available
+          echo "Step 2: Waiting for graph to be available..."
+          MAX_WAIT=600
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(aws neptune-graph get-graph \
+              --graph-identifier "$GRAPH_ID" \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'status' --output text)
+            
+            echo "  Graph status: $STATUS (waited ${ELAPSED}s)"
+            
+            if [ "$STATUS" = "AVAILABLE" ]; then
+              echo "✓ Graph is available"
+              break
+            elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "DELETING" ]; then
+              echo "✗ Graph creation failed with status: $STATUS"
+              exit 1
+            fi
+            
+            sleep 30
+            ELAPSED=$((ELAPSED + 30))
+          done
+          
+          # Step 3: Create Knowledge Base
+          echo "Step 3: Creating Bedrock Knowledge Base..."
+          KB_ID=$(aws bedrock-agent create-knowledge-base \
+            --name "${PROJECT_NAME}-knowledge-base" \
+            --role-arn "$KB_ROLE_ARN" \
+            --knowledge-base-configuration '{
+              "type": "VECTOR",
+              "vectorKnowledgeBaseConfiguration": {
+                "embeddingModelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/amazon.titan-embed-text-v2:0"
+              }
+            }' \
+            --storage-configuration '{
+              "type": "NEPTUNE_ANALYTICS",
+              "neptuneAnalyticsConfiguration": {
+                "graphArn": "'"$GRAPH_ARN"'",
+                "fieldMapping": {
+                  "metadataField": "metadata",
+                  "textField": "text"
+                }
+              }
+            }' \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'knowledgeBase.knowledgeBaseId' --output text)
+          
+          echo "✓ Knowledge Base created: $KB_ID"
+          
+          # Step 4: Create Data Source
+          echo "Step 4: Creating Data Source..."
+          BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
+          
+          DS_ID=$(aws bedrock-agent create-data-source \
+            --name "${PROJECT_NAME}-s3-datasource" \
+            --description "S3 data source for GraphRAG" \
+            --knowledge-base-id "$KB_ID" \
+            --data-source-configuration '{
+              "type": "S3",
+              "s3Configuration": {
+                "bucketArn": "'"$BUCKET_ARN"'",
+                "inclusionPrefixes": ["extracted/"]
+              }
+            }' \
+            --vector-ingestion-configuration '{
+              "chunkingConfiguration": {
+                "chunkingStrategy": "FIXED_SIZE",
+                "fixedSizeChunkingConfiguration": {
+                  "maxTokens": 1000,
+                  "overlapPercentage": 20
+                }
+              }
+            }' \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'dataSource.dataSourceId' --output text)
+          
+          echo "✓ Data Source created: $DS_ID"
+          
+          # Step 5: Update Lambda environment variables
+          echo "Step 5: Updating Lambda environment variables..."
+          
+          aws lambda update-function-configuration \
+            --function-name "${PROJECT_NAME}-kb-sync-trigger" \
+            --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},DATA_SOURCE_ID=${DS_ID}}" \
+            --region "$CDK_DEFAULT_REGION" >/dev/null
+          
+          aws lambda update-function-configuration \
+            --function-name "${PROJECT_NAME}-chat-handler" \
+            --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},MODEL_ID=${BEDROCK_MODEL_ID}}" \
+            --region "$CDK_DEFAULT_REGION" >/dev/null
+          
+          echo "✓ Lambda environment variables updated"
+          
+          echo ""
+          echo "========================================="
+          echo "✓ Deployment Complete!"
+          echo "========================================="
+          echo "Graph ID: $GRAPH_ID"
+          echo "Knowledge Base ID: $KB_ID"
+          echo "Data Source ID: $DS_ID"
+          echo "Data Bucket: $DATA_BUCKET"
+          echo "========================================="
+          STATE_MACHINE_ARN=$(cat outputs.json | jq -r '.LOCstack.StateMachineArn // empty')
+          NEPTUNE_ENDPOINT=$(cat outputs.json | jq -r '.LOCstack.NeptuneEndpoint // empty')
+          API_URL=$(cat outputs.json | jq -r '.LOCstack.APIGatewayURL // empty')
+          CHAT_ENDPOINT=$(cat outputs.json | jq -r '.LOCstack.ChatEndpoint // empty')
           
           if [ -z "$DATA_BUCKET" ] || [ -z "$STATE_MACHINE_ARN" ]; then
             echo "❌ ERROR: Could not extract required outputs from CDK deployment"

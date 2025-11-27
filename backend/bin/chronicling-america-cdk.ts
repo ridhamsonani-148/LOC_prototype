@@ -13,7 +13,7 @@ const bedrockModelId =
   app.node.tryGetContext("bedrockModelId") ||
   "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-new ChroniclingAmericaStack(app, "ChroniclingAmericaStackV2", {
+new ChroniclingAmericaStack(app, "LOCstack", {
   projectName,
   dataBucketName,
   bedrockModelId,

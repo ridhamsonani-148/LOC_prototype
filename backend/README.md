@@ -261,7 +261,7 @@ cd YOUR-REPO/backend
 ```bash
 # Get State Machine ARN
 STATE_MACHINE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
+  --stack-name LOCstack \
   --query 'Stacks[0].Outputs[?OutputKey==`StateMachineArn`].OutputValue' \
   --output text)
 
@@ -308,12 +308,12 @@ aws stepfunctions describe-execution \
 ```bash
 # Get KB IDs from outputs (after manual setup)
 KB_ID=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
+  --stack-name LOCstack \
   --query 'Stacks[0].Outputs[?OutputKey==`KnowledgeBaseId`].OutputValue' \
   --output text)
 
 DS_ID=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
+  --stack-name LOCstack \
   --query 'Stacks[0].Outputs[?OutputKey==`KnowledgeBaseDataSourceId`].OutputValue' \
   --output text)
 
@@ -457,7 +457,7 @@ For issues, check CloudWatch logs or create an issue in the repository.
 ```bash
 # Get API endpoint
 API_URL=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
+  --stack-name LOCstack \
   --query 'Stacks[0].Outputs[?OutputKey==`ChatEndpoint`].OutputValue' \
   --output text)
 
@@ -494,7 +494,7 @@ curl $API_URL/health
 ```bash
 # Get bucket name
 BUCKET_NAME=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
+  --stack-name LOCstack \
   --query 'Stacks[0].Outputs[?OutputKey==`DataBucketName`].OutputValue' \
   --output text)
 
@@ -793,7 +793,7 @@ memorySize: 3008,                   // Increase memory
 ### Manual Cleanup
 
 ```bash
-cdk destroy ChroniclingAmericaStack --force
+cdk destroy LOCstack --force
 
 # Delete S3 bucket (retained by default)
 aws s3 rb s3://YOUR-BUCKET-NAME --force
