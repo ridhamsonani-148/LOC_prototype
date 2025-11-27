@@ -5,19 +5,30 @@ import json
 import boto3
 import time
 import cfnresponse
+import os
 
-bedrock_agent = boto3.client('bedrock-agent')
-neptune_graph = boto3.client('neptune-graph')
+# Initialize clients
+region = os.environ.get('AWS_REGION', 'us-east-1')
+bedrock_agent = boto3.client('bedrock-agent', region_name=region)
+neptune_graph = boto3.client('neptune-graph', region_name=region)
 
 def handler(event, context):
     """
     CloudFormation Custom Resource handler
     Creates Neptune Analytics graph and Bedrock Knowledge Base
     """
-    print(f"Event: {json.dumps(event)}")
+    print("=" * 60)
+    print("KB Setup Lambda Handler Started")
+    print("=" * 60)
+    print(f"Event: {json.dumps(event, indent=2)}")
+    print(f"Region: {region}")
+    print(f"Context: {context}")
     
     request_type = event['RequestType']
     properties = event['ResourceProperties']
+    
+    print(f"Request Type: {request_type}")
+    print(f"Properties: {json.dumps(properties, indent=2)}")
     
     try:
         if request_type == 'Create':
@@ -40,7 +51,9 @@ def handler(event, context):
         print(f"Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+        # Use existing physical ID for Update/Delete, or generate one for Create
+        physical_id = event.get('PhysicalResourceId', 'FAILED')
+        cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)}, physical_id)
 
 
 def create_resources(properties):
