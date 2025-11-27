@@ -9,15 +9,23 @@ AWS_REGION=${AWS_REGION:-us-west-2}
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # Auto-detect repository name from CDK stack
-ECR_REPOSITORY=$(aws cloudformation describe-stacks \
-  --stack-name ChroniclingAmericaStack \
-  --region $AWS_REGION \
-  --query 'Stacks[0].Outputs[?OutputKey==`ECRRepositoryUri`].OutputValue' \
-  --output text 2>/dev/null | cut -d'/' -f2)
+# Try LOCstack first, then fall back to old names
+for STACK_NAME in "LOCstack" "ChroniclingAmericaStackV2" "ChroniclingAmericaStack"; do
+  ECR_REPOSITORY=$(aws cloudformation describe-stacks \
+    --stack-name $STACK_NAME \
+    --region $AWS_REGION \
+    --query 'Stacks[0].Outputs[?OutputKey==`ECRRepositoryUri`].OutputValue' \
+    --output text 2>/dev/null | cut -d'/' -f2)
+  
+  if [ -n "$ECR_REPOSITORY" ]; then
+    echo "✓ Found repository from stack: $STACK_NAME"
+    break
+  fi
+done
 
 # Fallback to default if not found
 if [ -z "$ECR_REPOSITORY" ]; then
-  ECR_REPOSITORY="loc-pipeline-collector"
+  ECR_REPOSITORY="loc-testing-collector"
   echo "Warning: Could not auto-detect repository name, using default: $ECR_REPOSITORY"
 fi
 
