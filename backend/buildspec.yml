@@ -178,17 +178,40 @@ phases:
           # Step 5: Update Lambda environment variables
           echo "Step 5: Updating Lambda environment variables..."
           
+          # Get current fargate-trigger Lambda config to preserve existing values
+          FARGATE_ENV=$(aws lambda get-function-configuration \
+            --function-name "${PROJECT_NAME}-fargate-trigger" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'Environment.Variables' \
+            --output json)
+          
+          ECS_CLUSTER=$(echo "$FARGATE_ENV" | jq -r '.ECS_CLUSTER_NAME')
+          TASK_DEF=$(echo "$FARGATE_ENV" | jq -r '.TASK_DEFINITION_ARN')
+          SUBNETS=$(echo "$FARGATE_ENV" | jq -r '.SUBNET_IDS')
+          SG=$(echo "$FARGATE_ENV" | jq -r '.SECURITY_GROUP_ID')
+          START_C=$(echo "$FARGATE_ENV" | jq -r '.START_CONGRESS')
+          END_C=$(echo "$FARGATE_ENV" | jq -r '.END_CONGRESS')
+          BILL_T=$(echo "$FARGATE_ENV" | jq -r '.BILL_TYPES')
+          
+          # Update fargate-trigger Lambda with KB IDs
+          aws lambda update-function-configuration \
+            --function-name "${PROJECT_NAME}-fargate-trigger" \
+            --environment Variables="{ECS_CLUSTER_NAME=${ECS_CLUSTER},TASK_DEFINITION_ARN=${TASK_DEF},SUBNET_IDS=${SUBNETS},SECURITY_GROUP_ID=${SG},BUCKET_NAME=${DATA_BUCKET},START_CONGRESS=${START_C},END_CONGRESS=${END_C},BILL_TYPES=${BILL_T},KNOWLEDGE_BASE_ID=${KB_ID},DATA_SOURCE_ID=${DS_ID}}" \
+            --region "$CDK_DEFAULT_REGION" >/dev/null
+          
+          # Update kb-sync-trigger Lambda
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-kb-sync-trigger" \
             --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},DATA_SOURCE_ID=${DS_ID}}" \
             --region "$CDK_DEFAULT_REGION" >/dev/null
           
+          # Update chat-handler Lambda
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-chat-handler" \
             --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},MODEL_ID=${BEDROCK_MODEL_ID}}" \
             --region "$CDK_DEFAULT_REGION" >/dev/null
           
-          echo "✓ Lambda environment variables updated"
+          echo "✓ Lambda environment variables updated (fargate-trigger, kb-sync-trigger, chat-handler)"
           
           echo ""
           echo "========================================="
