@@ -1,23 +1,17 @@
 """
 Chat Handler Lambda Function
 Provides chat interface using Bedrock Knowledge Base with GraphRAG
-Queries documents stored in Neptune with automatic entity extraction
+Uses Neptune Analytics graph through Knowledge Base for entity extraction
 """
 
 import json
 import os
-import time
 import boto3
-from botocore.exceptions import ClientError
 
-bedrock_runtime = boto3.client('bedrock-runtime')
 bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
 
-# Neptune Analytics is accessed through Knowledge Base, not directly
-NEPTUNE_ENDPOINT = os.environ.get('NEPTUNE_ENDPOINT', 'N/A')  # Not used with KB
-NEPTUNE_PORT = os.environ.get('NEPTUNE_PORT', '8182')
-BEDROCK_MODEL_ID = os.environ.get('BEDROCK_MODEL_ID', 'anthropic.claude-3-5-sonnet-20241022-v2:0')
-KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')  # Set this after creating KB
+BEDROCK_MODEL_ID = os.environ.get('MODEL_ID', 'anthropic.claude-3-5-sonnet-20241022-v2:0')
+KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')
 
 def lambda_handler(event, context):
     """
@@ -41,7 +35,8 @@ def lambda_handler(event, context):
             'body': json.dumps({
                 'status': 'healthy',
                 'service': 'chronicling-america-chat',
-                'neptune_endpoint': NEPTUNE_ENDPOINT
+                'knowledge_base_id': KNOWLEDGE_BASE_ID,
+                'model_id': BEDROCK_MODEL_ID
             })
         }
     
@@ -62,11 +57,8 @@ def lambda_handler(event, context):
         
         print(f"Question: {question}")
         
-        # Use Bedrock Knowledge Base for GraphRAG
-        if KNOWLEDGE_BASE_ID:
-            response = query_knowledge_base(question)
-        else:
-            # KB not configured yet
+        # Check if Knowledge Base is configured
+        if not KNOWLEDGE_BASE_ID:
             print("ERROR: KNOWLEDGE_BASE_ID not set")
             return {
                 'statusCode': 503,
@@ -78,6 +70,9 @@ def lambda_handler(event, context):
                     'error': 'Knowledge Base not configured yet. Please run the deployment pipeline first.'
                 })
             }
+        
+        # Query Knowledge Base with GraphRAG
+        response = query_knowledge_base(question)
         
         return {
             'statusCode': 200,
@@ -107,53 +102,10 @@ def lambda_handler(event, context):
         }
 
 
-def invoke_bedrock_with_retry(prompt: str, max_retries: int = 5) -> str:
-    """Invoke Bedrock with exponential backoff retry logic"""
-    
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 500,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}]
-            }
-        ]
-    }
-    
-    for attempt in range(max_retries):
-        try:
-            response = bedrock_runtime.invoke_model(
-                modelId=BEDROCK_MODEL_ID,
-                body=json.dumps(request_body)
-            )
-            
-            response_body = json.loads(response['body'].read())
-            return response_body['content'][0]['text'].strip()
-            
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            
-            if error_code == 'ThrottlingException':
-                if attempt < max_retries - 1:
-                    # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                    wait_time = 2 ** attempt
-                    print(f"Throttled, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception("Too many requests. Please wait a moment and try again.")
-            else:
-                # For other errors, raise immediately
-                raise
-    
-    raise Exception("Max retries exceeded")
-
-
 def query_knowledge_base(question: str) -> dict:
     """
     Query Bedrock Knowledge Base with GraphRAG
-    Automatically extracts entities and relationships from documents
+    Neptune Analytics graph provides automatic entity extraction and relationships
     """
     print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
     
@@ -207,73 +159,8 @@ def query_knowledge_base(question: str) -> dict:
         
     except Exception as e:
         print(f"Error querying Knowledge Base: {e}")
-        # Fallback to direct answer
         return {
             'answer': f"I encountered an error querying the knowledge base: {str(e)}",
             'sources': [],
             'entities': []
         }
-
-
-def answer_question_direct_neptune(question: str) -> dict:
-    """
-    Fallback: Direct Neptune query without Knowledge Base
-    Used when KNOWLEDGE_BASE_ID is not configured
-    """
-    from gremlin_python.driver import client, serializer
-    
-    # Connect to Neptune
-    connection_url = f'wss://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin'
-    print(f"Connecting to Neptune: {connection_url}")
-    
-    neptune_client = client.Client(
-        connection_url,
-        'g',
-        message_serializer=serializer.GraphSONSerializersV2d0()
-    )
-    
-    # Simple query to get documents
-    query = "g.V().hasLabel('Document').limit(10).valueMap(true)"
-    
-    try:
-        results = neptune_client.submit(query).all().result()
-        
-        # Format results for answer
-        documents = []
-        for result in results:
-            if isinstance(result, dict):
-                doc_text = result.get('document_text', [''])[0] if 'document_text' in result else ''
-                documents.append(doc_text[:500])  # First 500 chars
-        
-        # Use Claude to answer based on documents
-        if documents:
-            prompt = f"""Based on these historical newspaper documents from 1815-1820:
-
-{chr(10).join(documents)}
-
-Answer this question: {question}
-
-Provide a helpful, concise answer based on the documents."""
-            
-            answer = invoke_bedrock_with_retry(prompt)
-        else:
-            answer = "No documents found in the database. Please run the pipeline to load documents first."
-        
-        neptune_client.close()
-        
-        return {
-            'answer': answer,
-            'sources': [{'document_id': f'doc_{i}', 'content': doc[:200]} for i, doc in enumerate(documents)],
-            'entities': []
-        }
-        
-    except Exception as e:
-        print(f"Error querying Neptune: {e}")
-        return {
-            'answer': f"Error querying database: {str(e)}",
-            'sources': [],
-            'entities': []
-        }
-
-
-
