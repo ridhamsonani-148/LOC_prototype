@@ -185,30 +185,50 @@ phases:
             --query 'Environment.Variables' \
             --output json)
           
-          ECS_CLUSTER=$(echo "$FARGATE_ENV" | jq -r '.ECS_CLUSTER_NAME')
-          TASK_DEF=$(echo "$FARGATE_ENV" | jq -r '.TASK_DEFINITION_ARN')
-          SUBNETS=$(echo "$FARGATE_ENV" | jq -r '.SUBNET_IDS')
-          SG=$(echo "$FARGATE_ENV" | jq -r '.SECURITY_GROUP_ID')
-          START_C=$(echo "$FARGATE_ENV" | jq -r '.START_CONGRESS')
-          END_C=$(echo "$FARGATE_ENV" | jq -r '.END_CONGRESS')
-          BILL_T=$(echo "$FARGATE_ENV" | jq -r '.BILL_TYPES')
+          # Update fargate-trigger Lambda with KB IDs (using jq to build proper JSON)
+          echo "$FARGATE_ENV" | jq \
+            --arg kb_id "$KB_ID" \
+            --arg ds_id "$DS_ID" \
+            --arg bucket "$DATA_BUCKET" \
+            '. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id, BUCKET_NAME: $bucket}' > /tmp/fargate_env.json
           
-          # Update fargate-trigger Lambda with KB IDs
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-fargate-trigger" \
-            --environment Variables="{ECS_CLUSTER_NAME=${ECS_CLUSTER},TASK_DEFINITION_ARN=${TASK_DEF},SUBNET_IDS=${SUBNETS},SECURITY_GROUP_ID=${SG},BUCKET_NAME=${DATA_BUCKET},START_CONGRESS=${START_C},END_CONGRESS=${END_C},BILL_TYPES=${BILL_T},KNOWLEDGE_BASE_ID=${KB_ID},DATA_SOURCE_ID=${DS_ID}}" \
+            --environment file:///tmp/fargate_env.json \
             --region "$CDK_DEFAULT_REGION" >/dev/null
           
-          # Update kb-sync-trigger Lambda
+          # Update kb-sync-trigger Lambda (preserve existing vars)
+          KB_SYNC_ENV=$(aws lambda get-function-configuration \
+            --function-name "${PROJECT_NAME}-kb-sync-trigger" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'Environment.Variables' \
+            --output json)
+          
+          echo "$KB_SYNC_ENV" | jq \
+            --arg kb_id "$KB_ID" \
+            --arg ds_id "$DS_ID" \
+            '. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id}' > /tmp/kb_sync_env.json
+          
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-kb-sync-trigger" \
-            --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},DATA_SOURCE_ID=${DS_ID}}" \
+            --environment file:///tmp/kb_sync_env.json \
             --region "$CDK_DEFAULT_REGION" >/dev/null
           
-          # Update chat-handler Lambda
+          # Update chat-handler Lambda (preserve existing vars)
+          CHAT_ENV=$(aws lambda get-function-configuration \
+            --function-name "${PROJECT_NAME}-chat-handler" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'Environment.Variables' \
+            --output json)
+          
+          echo "$CHAT_ENV" | jq \
+            --arg kb_id "$KB_ID" \
+            --arg model_id "$BEDROCK_MODEL_ID" \
+            '. + {KNOWLEDGE_BASE_ID: $kb_id, MODEL_ID: $model_id}' > /tmp/chat_env.json
+          
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-chat-handler" \
-            --environment Variables="{KNOWLEDGE_BASE_ID=${KB_ID},MODEL_ID=${BEDROCK_MODEL_ID}}" \
+            --environment file:///tmp/chat_env.json \
             --region "$CDK_DEFAULT_REGION" >/dev/null
           
           echo "✓ Lambda environment variables updated (fargate-trigger, kb-sync-trigger, chat-handler)"
