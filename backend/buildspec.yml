@@ -190,7 +190,7 @@ phases:
             --arg kb_id "$KB_ID" \
             --arg ds_id "$DS_ID" \
             --arg bucket "$DATA_BUCKET" \
-            '. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id, BUCKET_NAME: $bucket}' > /tmp/fargate_env.json
+            '{Variables: (. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id, BUCKET_NAME: $bucket})}' > /tmp/fargate_env.json
           
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-fargate-trigger" \
@@ -207,7 +207,7 @@ phases:
           echo "$KB_SYNC_ENV" | jq \
             --arg kb_id "$KB_ID" \
             --arg ds_id "$DS_ID" \
-            '. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id}' > /tmp/kb_sync_env.json
+            '{Variables: (. + {KNOWLEDGE_BASE_ID: $kb_id, DATA_SOURCE_ID: $ds_id})}' > /tmp/kb_sync_env.json
           
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-kb-sync-trigger" \
@@ -224,7 +224,7 @@ phases:
           echo "$CHAT_ENV" | jq \
             --arg kb_id "$KB_ID" \
             --arg model_id "$BEDROCK_MODEL_ID" \
-            '. + {KNOWLEDGE_BASE_ID: $kb_id, MODEL_ID: $model_id}' > /tmp/chat_env.json
+            '{Variables: (. + {KNOWLEDGE_BASE_ID: $kb_id, MODEL_ID: $model_id})}' > /tmp/chat_env.json
           
           aws lambda update-function-configuration \
             --function-name "${PROJECT_NAME}-chat-handler" \
