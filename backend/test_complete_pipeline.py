@@ -100,21 +100,28 @@ def get_resources():
     print("  cd backend && ./deploy.sh")
     sys.exit(1)
 
-def trigger_fargate_collection(resources, congress=7, bill_type='hr'):
+def trigger_fargate_collection(resources, start_congress=7, end_congress=None, bill_types='hr,s,hjres,sjres,hconres,sconres,hres,sres'):
     """Step 2: Trigger Fargate task to collect data"""
     print_header("Step 2: Triggering Fargate Data Collection")
     
     lambda_client = boto3.client('lambda')
     
+    # If end_congress not specified, use start_congress
+    if end_congress is None:
+        end_congress = start_congress
+    
     payload = {
         "body": json.dumps({
-            "start_congress": congress,
-            "end_congress": congress,
-            "bill_types": bill_type
+            "start_congress": start_congress,
+            "end_congress": end_congress,
+            "bill_types": bill_types
         })
     }
     
-    print(f"Collecting bills from Congress {congress}, type: {bill_type}")
+    if start_congress == end_congress:
+        print(f"Collecting bills from Congress {start_congress}, types: {bill_types}")
+    else:
+        print(f"Collecting bills from Congresses {start_congress}-{end_congress}, types: {bill_types}")
     print(f"Invoking Lambda: {resources['fargate_trigger_fn']}")
     
     try:
@@ -362,8 +369,15 @@ def main():
         print_info("Make sure the deployment completed successfully")
         sys.exit(1)
     
-    # Step 2: Trigger Fargate collection
-    task_arn = trigger_fargate_collection(resources, congress=7, bill_type='hr')
+    # Step 2: Trigger Fargate collection for all Congresses 1-16 with all bill types
+    print_info("Collecting data from Congresses 1 through 16...")
+    print_info("Bill types: hr, s, hjres, sjres, hconres, sconres, hres, sres")
+    task_arn = trigger_fargate_collection(
+        resources, 
+        start_congress=1, 
+        end_congress=16, 
+        bill_types='hr,s,hjres,sjres,hconres,sconres,hres,sres'
+    )
     if not task_arn:
         print_error("Failed to start Fargate task")
         print("")
