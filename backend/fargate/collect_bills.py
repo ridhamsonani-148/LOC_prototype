@@ -71,25 +71,64 @@ class DataCollector:
             file_bytes = response.content
             size_mb = len(file_bytes) / (1024 * 1024)
             
+            # Check Content-Type header
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'text/html' in content_type or 'text/plain' in content_type:
+                self.log(f"  ⚠️  Server returned {content_type}, not a PDF")
+                return None
+            
             self.log(f"  File size: {size_mb:.2f}MB")
+            
+            # Skip very small files (likely corrupted or empty)
+            if size_mb < 0.001:  # Less than 1KB
+                self.log(f"  ⚠️  File too small, likely empty or corrupted")
+                return None
             
             # Check size limits
             if size_mb > 500:
                 self.log(f"  ✗ File too large for Textract (max 500MB)")
                 return None
             
-            # Choose sync or async based on size
+            # Verify it's actually a PDF by checking magic bytes
+            if not self._is_valid_pdf(file_bytes):
+                self.log(f"  ⚠️  Not a valid PDF file (might be HTML or corrupted)")
+                # Try to detect if it's HTML
+                if file_bytes[:15].lower().startswith(b'<!doctype') or file_bytes[:6].lower().startswith(b'<html'):
+                    self.log(f"  ⚠️  File is HTML, not PDF")
+                return None
+            
+            # Strategy: Try sync first (faster), fallback to async if needed
+            # Sync API: Single-page only, 1 TPS, instant results
+            # Async API: Multi-page support, 2 TPS, ~30-60s processing
+            
             if size_mb <= 5:
-                return self._textract_sync(file_bytes, doc_id)
+                # Try sync first for speed
+                result = self._textract_sync(file_bytes, doc_id)
+                if result:
+                    return result
+                # Sync failed (likely multi-page), try async
+                self.log(f"  Retrying with async API for multi-page support...")
+                return self._textract_async(file_bytes, doc_id)
             else:
+                # Large files, use async directly
                 return self._textract_async(file_bytes, doc_id)
             
         except Exception as e:
             self.log(f"  ✗ Error with Textract extraction: {str(e)}")
             return None
     
+    def _is_valid_pdf(self, file_bytes: bytes) -> bool:
+        """Check if file is a valid PDF by checking magic bytes"""
+        if len(file_bytes) < 4:
+            return False
+        # PDF files start with %PDF
+        return file_bytes[:4] == b'%PDF'
+    
     def _textract_sync(self, file_bytes: bytes, doc_id: str) -> str:
-        """Synchronous Textract for files <= 5MB"""
+        """
+        Synchronous Textract for files <= 5MB
+        Returns None if document is multi-page (needs async)
+        """
         try:
             self.log(f"  Using Textract synchronous API...")
             
@@ -107,16 +146,31 @@ class DataCollector:
             extracted_text = '\n'.join(text_parts)
             char_count = len(extracted_text)
             
-            self.log(f"  ✓ Extracted {char_count} characters")
+            self.log(f"  ✓ Extracted {char_count} characters (sync)")
             
             # Rate limiting: 1 TPS for sync API
             time.sleep(1)
             
             return extracted_text if char_count > 0 else None
             
-        except Exception as e:
-            self.log(f"  ✗ Textract sync error: {e}")
+        except textract.exceptions.UnsupportedDocumentException as e:
+            # This often means multi-page document - return None to trigger async retry
+            self.log(f"  ⚠️  Sync API failed (likely multi-page document)")
             return None
+        except textract.exceptions.InvalidParameterException as e:
+            self.log(f"  ⚠️  Invalid document (corrupted or wrong format)")
+            return None
+        except Exception as e:
+            error_str = str(e)
+            if 'UnsupportedDocument' in error_str:
+                self.log(f"  ⚠️  Sync API failed (likely multi-page)")
+                return None
+            elif 'InvalidParameter' in error_str:
+                self.log(f"  ⚠️  Invalid document")
+                return None
+            else:
+                self.log(f"  ✗ Textract sync error: {e}")
+                return None
     
     def _textract_async(self, file_bytes: bytes, doc_id: str) -> str:
         """Asynchronous Textract for files > 5MB"""
@@ -245,11 +299,20 @@ class DataCollector:
             
             self.log(f"  Fetching text versions from: {text_url}")
             response = requests.get(text_url, params=params, headers=headers, timeout=30)
+            
+            # Handle API errors gracefully
+            if response.status_code == 500:
+                self.log(f"  ⚠️  Congress API returned 500 error (bill may not have text)")
+                return None
+            elif response.status_code == 404:
+                self.log(f"  ⚠️  Bill text not found (404)")
+                return None
+            
             response.raise_for_status()
             data = response.json()
             
             if 'textVersions' not in data or not data['textVersions']:
-                self.log(f"  No text versions available")
+                self.log(f"  ⚠️  No text versions available")
                 return None
             
             # Get the first (latest) text version
@@ -257,7 +320,7 @@ class DataCollector:
             formats = text_version.get('formats', [])
             
             if not formats:
-                self.log(f"  No formats available")
+                self.log(f"  ⚠️  No formats available")
                 return None
             
             # Priority: Plain Text > PDF (with Textract)
@@ -270,9 +333,14 @@ class DataCollector:
                         self.log(f"  Downloading plain text")
                         response = requests.get(fmt['url'], headers=headers, timeout=30)
                         response.raise_for_status()
-                        return response.text
+                        text = response.text
+                        # Verify it's actually text, not HTML
+                        if '<html' in text.lower() or '<!doctype' in text.lower():
+                            self.log(f"  ⚠️  Plain text is actually HTML, skipping")
+                            continue
+                        return text
                     except Exception as e:
-                        self.log(f"  Plain text download failed: {e}")
+                        self.log(f"  ⚠️  Plain text download failed: {e}")
             
             # Try PDF with Textract
             for fmt in formats:
@@ -286,10 +354,17 @@ class DataCollector:
                 if text_content:
                     return text_content
             
+            self.log(f"  ⚠️  No usable text format found")
             return None
             
+        except requests.exceptions.HTTPError as e:
+            if '500' in str(e):
+                self.log(f"  ⚠️  Congress API error (500) - bill may not have text")
+            else:
+                self.log(f"  ⚠️  HTTP error: {e}")
+            return None
         except Exception as e:
-            self.log(f"  Error getting bill text: {str(e)}")
+            self.log(f"  ✗ Error getting bill text: {str(e)}")
             return None
     
     def save_bill_to_s3(self, congress_num, bill_type, bill_number, text_content, metadata):
