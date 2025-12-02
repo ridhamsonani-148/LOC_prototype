@@ -8,6 +8,13 @@ import boto3
 import json
 import time
 import sys
+import os
+
+# Set region - CHANGE THIS to match your deployment region
+AWS_REGION = os.environ.get('AWS_REGION', 'us-west-2')
+
+# Configure boto3 to use the correct region
+boto3.setup_default_session(region_name=AWS_REGION)
 
 # Colors
 GREEN = '\033[0;32m'
@@ -15,6 +22,8 @@ RED = '\033[0;31m'
 YELLOW = '\033[1;33m'
 BLUE = '\033[0;34m'
 NC = '\033[0m'
+
+print(f"Using AWS Region: {AWS_REGION}")
 
 def print_header(text):
     print(f"\n{'='*60}")
@@ -314,7 +323,7 @@ def test_query(resources, question, model_arn=None):
     
     # Use provided model ARN or default to inference profile
     if not model_arn:
-        model_arn = 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+        model_arn = f'arn:aws:bedrock:{AWS_REGION}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
     
     print(f"Question: {question}")
     print(f"Model: {model_arn}")
@@ -418,7 +427,7 @@ def main():
     print(f"  aws bedrock-agent list-ingestion-jobs \\")
     print(f"    --knowledge-base-id {resources['kb_id']} \\")
     print(f"    --data-source-id {resources['ds_id']} \\")
-    print(f"    --region us-east-1")
+    print(f"    --region {AWS_REGION}")
     print("")
     
     # Don't wait or test queries - let Fargate handle everything
