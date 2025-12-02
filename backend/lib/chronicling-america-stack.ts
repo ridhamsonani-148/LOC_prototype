@@ -130,6 +130,19 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
+    // Grant Bedrock Data Automation permissions to Fargate task
+    fargateTaskRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:InvokeDataAutomationAsync",
+          "bedrock:GetDataAutomationStatus",
+          "bedrock:InvokeModel",
+        ],
+        resources: ["*"],
+      })
+    );
+
     // Fargate Task Definition
     const collectorTaskDefinition = new ecs.FargateTaskDefinition(
       this,
@@ -163,10 +176,16 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }),
       environment: {
         BUCKET_NAME: dataBucket.bucketName,
+        BEDROCK_MODEL_ID: bedrockModelId,
+        // Congress Bills Configuration
         START_CONGRESS: "1",
         END_CONGRESS: "16",
-        BILL_TYPES: "hr,s",
+        BILL_TYPES: "hr,s,hjres,sjres,hconres,sconres,hres,sres",
         CONGRESS_API_KEY: "MThtRT5WkFu8I8CHOfiLLebG4nsnKcX3JnNv2N8A",
+        // Chronicling America Newspapers Configuration
+        START_YEAR: "1760",
+        END_YEAR: "1820",
+        MAX_NEWSPAPER_PAGES: "10",
       },
     });
 
