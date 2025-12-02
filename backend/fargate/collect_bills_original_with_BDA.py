@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Fargate Task: Multi-Source Data Collector with Textract
+Fargate Task: Multi-Source Data Collector
 Fetches data from:
 1. Congress API (bills from Congress 1-16)
 2. Chronicling America (newspapers 1760-1820)
-Uses Amazon Textract for text extraction from PDFs and images
+Uses Bedrock Data Automation for text extraction from PDFs
 """
 
 import os
@@ -19,6 +19,7 @@ from typing import List, Dict, Any
 # Configuration
 CONGRESS_API_KEY = os.environ.get('CONGRESS_API_KEY', 'MThtRT5WkFu8I8CHOfiLLebG4nsnKcX3JnNv2N8A')
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
+BEDROCK_MODEL_ID = os.environ.get('BEDROCK_MODEL_ID', 'anthropic.claude-3-haiku-20240307-v1:0')
 
 # Congress configuration
 START_CONGRESS = int(os.environ.get('START_CONGRESS', '1'))
@@ -42,6 +43,7 @@ class DataCollector:
         self.errors = []
         self.congress_stats = {'total': 0, 'successful': 0, 'failed': 0}
         self.newspaper_stats = {'total': 0, 'successful': 0, 'failed': 0}
+        self.bda_project_arn = None  # Cache project ARN
     
     def log(self, message):
         """Log with timestamp"""
@@ -49,180 +51,283 @@ class DataCollector:
         print(f"[{timestamp}] {message}")
         sys.stdout.flush()
     
-    def extract_text_with_textract(self, pdf_url: str, doc_id: str) -> str:
+    def ensure_bda_project_exists(self) -> str:
         """
-        Extract text from PDF or image using Amazon Textract
-        Automatically chooses sync or async based on file size
+        Ensure Bedrock Data Automation project exists, create if needed
+        Returns project ARN
+        """
+        # Return cached ARN if available
+        if self.bda_project_arn:
+            return self.bda_project_arn
         
-        Textract Limitations:
-        - Synchronous: Max 5MB, single page, 1 TPS
-        - Asynchronous: Max 500MB, up to 3000 pages, 2 TPS
+        # Use provided ARN if available
+        if BEDROCK_PROJECT_ARN:
+            self.bda_project_arn = BEDROCK_PROJECT_ARN
+            self.log(f"Using provided BDA project: {self.bda_project_arn}")
+            return self.bda_project_arn
+        
+        self.log(f"Checking if BDA project '{BEDROCK_PROJECT_NAME}' exists...")
+        
+        try:
+            # Try to list and find existing project
+            response = bedrock_da.list_data_automation_projects()
+            projects = response.get('projects', [])
+            
+            for project in projects:
+                if project['projectName'] == BEDROCK_PROJECT_NAME:
+                    self.bda_project_arn = project['projectArn']
+                    self.log(f"✓ Found existing BDA project: {self.bda_project_arn}")
+                    return self.bda_project_arn
+            
+            self.log(f"Project not found, creating new BDA project: {BEDROCK_PROJECT_NAME}")
+            
+        except Exception as e:
+            self.log(f"Error listing projects: {e}")
+        
+        # Create new project
+        try:
+            response = bedrock_da.create_data_automation_project(
+                projectName=BEDROCK_PROJECT_NAME,
+                projectDescription="Historical document data extraction",
+                projectStage='LIVE',
+                standardOutputConfiguration={
+                    'document': {
+                        'extraction': {
+                            'granularity': {
+                                'types': ['DOCUMENT', 'PAGE', 'ELEMENT', 'WORD', 'LINE']
+                            },
+                            'boundingBox': {
+                                'state': 'ENABLED'
+                            }
+                        },
+                        'generativeField': {
+                            'state': 'ENABLED'
+                        },
+                        'outputFormat': {
+                            'textFormat': {
+                                'types': ['PLAIN_TEXT', 'MARKDOWN', 'HTML', 'CSV']
+                            },
+                            'additionalFileFormat': {
+                                'state': 'ENABLED'
+                            }
+                        }
+                    }
+                }
+            )
+            
+            self.bda_project_arn = response['projectArn']
+            self.log(f"✓ Created BDA project: {self.bda_project_arn}")
+            return self.bda_project_arn
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log(f"✗ Failed to create BDA project: {error_msg}")
+            
+            # If conflict, project exists but hidden
+            if 'ConflictException' in error_msg or 'already exists' in error_msg.lower():
+                self.log("⚠️  Project exists but not visible - using fallback")
+                # Try one more time to list
+                time.sleep(2)
+                try:
+                    response = bedrock_da.list_data_automation_projects()
+                    for project in response.get('projects', []):
+                        if project['projectName'] == BEDROCK_PROJECT_NAME:
+                            self.bda_project_arn = project['projectArn']
+                            return self.bda_project_arn
+                except:
+                    pass
+            
+            raise RuntimeError(f"Failed to create/find BDA project: {error_msg}")
+    
+    def extract_text_with_bda(self, pdf_url: str, doc_id: str) -> str:
+        """
+        Extract text from PDF using Bedrock Data Automation
+        Downloads PDF, uploads to S3, processes with BDA, returns text
         """
         try:
-            self.log(f"  Downloading from: {pdf_url}")
+            self.log(f"  Downloading PDF from: {pdf_url}")
             
-            # Download file
+            # Add headers for congress.gov
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             response = requests.get(pdf_url, headers=headers, timeout=60)
             response.raise_for_status()
             
-            file_bytes = response.content
-            size_mb = len(file_bytes) / (1024 * 1024)
-            
-            self.log(f"  File size: {size_mb:.2f}MB")
-            
-            # Check size limits
-            if size_mb > 500:
-                self.log(f"  ✗ File too large for Textract (max 500MB)")
-                return None
-            
-            # Choose sync or async based on size
-            if size_mb <= 5:
-                return self._textract_sync(file_bytes, doc_id)
-            else:
-                return self._textract_async(file_bytes, doc_id)
-            
-        except Exception as e:
-            self.log(f"  ✗ Error with Textract extraction: {str(e)}")
-            return None
-    
-    def _textract_sync(self, file_bytes: bytes, doc_id: str) -> str:
-        """Synchronous Textract for files <= 5MB"""
-        try:
-            self.log(f"  Using Textract synchronous API...")
-            
-            # Call Textract
-            response = textract.detect_document_text(
-                Document={'Bytes': file_bytes}
-            )
-            
-            # Extract text from LINE blocks
-            text_parts = []
-            for block in response.get('Blocks', []):
-                if block['BlockType'] == 'LINE':
-                    text_parts.append(block['Text'])
-            
-            extracted_text = '\n'.join(text_parts)
-            char_count = len(extracted_text)
-            
-            self.log(f"  ✓ Extracted {char_count} characters")
-            
-            # Rate limiting: 1 TPS for sync API
-            time.sleep(1)
-            
-            return extracted_text if char_count > 0 else None
-            
-        except Exception as e:
-            self.log(f"  ✗ Textract sync error: {e}")
-            return None
-    
-    def _textract_async(self, file_bytes: bytes, doc_id: str) -> str:
-        """Asynchronous Textract for files > 5MB"""
-        try:
-            self.log(f"  Using Textract asynchronous API...")
-            
-            # Upload to S3 (required for async)
-            temp_key = f"temp/textract/{doc_id}.pdf"
+            # Upload PDF to S3 temp location
+            temp_key = f"temp/pdfs/{doc_id}.pdf"
             s3.put_object(
                 Bucket=BUCKET_NAME,
                 Key=temp_key,
-                Body=file_bytes,
+                Body=response.content,
                 ContentType='application/pdf'
             )
             
-            self.log(f"  Uploaded to S3: {temp_key}")
+            self.log(f"  Uploaded PDF to S3: {temp_key}")
+            self.log(f"  Processing with Bedrock Data Automation...")
             
-            # Start async text detection job
-            response = textract.start_document_text_detection(
-                DocumentLocation={
-                    'S3Object': {
-                        'Bucket': BUCKET_NAME,
-                        'Name': temp_key
-                    }
-                }
+            # Ensure BDA project exists
+            project_arn = self.ensure_bda_project_exists()
+            
+            # Process with BDA
+            input_s3_uri = f"s3://{BUCKET_NAME}/{temp_key}"
+            output_prefix = f"temp/bda-output/{doc_id}/"
+            output_s3_uri = f"s3://{BUCKET_NAME}/{output_prefix}"
+            
+            # Invoke BDA with correct client and parameters
+            response = bedrock_da_runtime.invoke_data_automation_async(
+                inputConfiguration={
+                    's3Uri': input_s3_uri
+                },
+                outputConfiguration={
+                    's3Uri': output_s3_uri
+                },
+                dataAutomationConfiguration={
+                    'dataAutomationProjectArn': project_arn,
+                    'stage': 'LIVE'
+                },
+                dataAutomationProfileArn=BEDROCK_PROFILE_ARN
             )
             
-            job_id = response['JobId']
-            self.log(f"  Textract job started: {job_id}")
+            invocation_arn = response['invocationArn']
+            self.log(f"  BDA invocation started: {invocation_arn}")
             
-            # Poll for completion
-            max_wait = 600  # 10 minutes
+            # Wait for BDA to complete (poll status)
+            max_wait = 300  # 5 minutes
             elapsed = 0
-            poll_interval = 10
+            poll_interval = 15
             
             while elapsed < max_wait:
-                result = textract.get_document_text_detection(JobId=job_id)
-                status = result['JobStatus']
+                status_response = bedrock_da_runtime.get_data_automation_status(
+                    invocationArn=invocation_arn
+                )
+                
+                status = status_response['status']
                 
                 if elapsed % 30 == 0:  # Log every 30 seconds
-                    self.log(f"  Textract status: {status} ({elapsed}s)")
+                    self.log(f"  BDA status: {status} (elapsed: {elapsed}s)")
                 
-                if status == 'SUCCEEDED':
-                    # Extract text from all pages
-                    text_parts = []
-                    page_count = 0
+                if status == 'Success':
+                    self.log(f"  ✓ BDA processing completed in {elapsed}s")
                     
-                    # Get first batch
-                    for block in result.get('Blocks', []):
-                        if block['BlockType'] == 'LINE':
-                            text_parts.append(block['Text'])
-                        elif block['BlockType'] == 'PAGE':
-                            page_count += 1
+                    # Get actual output URI from response
+                    job_metadata_uri = status_response['outputConfiguration']['s3Uri']
                     
-                    # Get remaining pages (pagination)
-                    next_token = result.get('NextToken')
-                    while next_token:
-                        result = textract.get_document_text_detection(
-                            JobId=job_id,
-                            NextToken=next_token
-                        )
-                        for block in result.get('Blocks', []):
-                            if block['BlockType'] == 'LINE':
-                                text_parts.append(block['Text'])
-                            elif block['BlockType'] == 'PAGE':
-                                page_count += 1
-                        next_token = result.get('NextToken')
+                    # Extract text from BDA output
+                    text = self._extract_text_from_bda_output(job_metadata_uri)
                     
-                    extracted_text = '\n'.join(text_parts)
-                    char_count = len(extracted_text)
+                    # Cleanup temp files
+                    self._cleanup_s3_prefix(f"temp/pdfs/{doc_id}")
+                    self._cleanup_s3_prefix(output_prefix)
                     
-                    self.log(f"  ✓ Extracted {char_count} characters from {page_count} pages")
+                    return text
                     
-                    # Cleanup
-                    self._cleanup_s3_file(temp_key)
-                    
-                    # Rate limiting: 2 TPS for async API
-                    time.sleep(0.5)
-                    
-                    return extracted_text if char_count > 0 else None
-                    
-                elif status == 'FAILED':
-                    self.log(f"  ✗ Textract job failed")
-                    status_message = result.get('StatusMessage', 'Unknown error')
-                    self.log(f"  Error: {status_message}")
-                    self._cleanup_s3_file(temp_key)
+                elif status in ['ClientError', 'ServiceError']:
+                    error_msg = status_response.get('errorMessage', 'Unknown error')
+                    self.log(f"  ✗ BDA processing failed: {error_msg}")
                     return None
                 
                 time.sleep(poll_interval)
                 elapsed += poll_interval
             
-            self.log(f"  ✗ Textract timeout after {max_wait}s")
-            self._cleanup_s3_file(temp_key)
+            self.log(f"  ⚠️  BDA processing timeout after {max_wait}s")
             return None
             
         except Exception as e:
-            self.log(f"  ✗ Textract async error: {e}")
-            self._cleanup_s3_file(f"temp/textract/{doc_id}.pdf")
+            self.log(f"  ✗ Error with BDA extraction: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
-    def _cleanup_s3_file(self, key: str):
-        """Delete a single S3 object"""
+    def _extract_text_from_bda_output(self, job_metadata_uri: str) -> str:
+        """Extract text from BDA output JSON"""
         try:
-            s3.delete_object(Bucket=BUCKET_NAME, Key=key)
+            # Parse S3 URI to get bucket and key
+            import re
+            match = re.match(r's3://([^/]+)/(.+)', job_metadata_uri)
+            if not match:
+                self.log(f"  ✗ Invalid S3 URI: {job_metadata_uri}")
+                return None
+            
+            bucket = match.group(1)
+            job_metadata_key = match.group(2)
+            
+            # Read job_metadata.json
+            self.log(f"  Reading job metadata from: {job_metadata_key}")
+            response = s3.get_object(Bucket=bucket, Key=job_metadata_key)
+            job_metadata = json.loads(response['Body'].read().decode('utf-8'))
+            
+            # Extract the standard_output_path from job_metadata
+            # Path: output_metadata[0].segment_metadata[0].standard_output_path
+            standard_output_path = (
+                job_metadata
+                .get('output_metadata', [{}])[0]
+                .get('segment_metadata', [{}])[0]
+                .get('standard_output_path', '')
+            )
+            
+            if not standard_output_path:
+                self.log(f"  ⚠️  No standard_output_path in job_metadata")
+                return None
+            
+            # Parse the standard output path
+            match = re.match(r's3://([^/]+)/(.+)', standard_output_path)
+            if not match:
+                self.log(f"  ✗ Invalid standard output path: {standard_output_path}")
+                return None
+            
+            output_bucket = match.group(1)
+            output_key = match.group(2)
+            
+            # Read the actual output file
+            self.log(f"  Reading extracted data from: {output_key}")
+            response = s3.get_object(Bucket=output_bucket, Key=output_key)
+            output_data = json.loads(response['Body'].read().decode('utf-8'))
+            
+            # Extract text from BDA output structure
+            # BDA output has different formats - try multiple paths
+            text_parts = []
+            
+            # Try extractedText field
+            if 'extractedText' in output_data:
+                return output_data['extractedText']
+            
+            # Try pages array
+            if 'pages' in output_data:
+                for page in output_data['pages']:
+                    if 'text' in page:
+                        text_parts.append(page['text'])
+                    elif 'content' in page:
+                        text_parts.append(page['content'])
+            
+            # Try blocks array (Textract-style output)
+            if 'blocks' in output_data:
+                for block in output_data['blocks']:
+                    if block.get('blockType') == 'LINE' and 'text' in block:
+                        text_parts.append(block['text'])
+            
+            # Try document field
+            if 'document' in output_data:
+                doc = output_data['document']
+                if 'text' in doc:
+                    return doc['text']
+                if 'content' in doc:
+                    return doc['content']
+            
+            if text_parts:
+                return '\n'.join(text_parts)
+            
+            self.log(f"  ⚠️  Could not find text in BDA output")
+            self.log(f"  Output keys: {list(output_data.keys())}")
+            return None
+            
         except Exception as e:
-            self.log(f"  Cleanup warning: {e}")
+            self.log(f"  ✗ Error extracting BDA output: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+
     
     def _cleanup_s3_prefix(self, prefix: str):
         """Delete all objects under a prefix"""
@@ -260,7 +365,8 @@ class DataCollector:
                 self.log(f"  No formats available")
                 return None
             
-            # Priority: Plain Text > PDF (with Textract)
+            # Priority: Plain Text > PDF (with BDA)
+            text_content = None
             pdf_url = None
             
             # Try Plain Text first
@@ -274,7 +380,7 @@ class DataCollector:
                     except Exception as e:
                         self.log(f"  Plain text download failed: {e}")
             
-            # Try PDF with Textract
+            # Try PDF with BDA
             for fmt in formats:
                 if fmt.get('type') == 'PDF':
                     pdf_url = fmt['url']
@@ -282,7 +388,7 @@ class DataCollector:
             
             if pdf_url:
                 doc_id = f"congress_{congress_num}_{bill_type}_{bill_number}"
-                text_content = self.extract_text_with_textract(pdf_url, doc_id)
+                text_content = self.extract_text_with_bda(pdf_url, doc_id)
                 if text_content:
                     return text_content
             
@@ -358,6 +464,7 @@ class DataCollector:
                 return False
             
             # Save to S3
+            # Extract year from date for organization
             year = date.split('-')[0] if date else 'unknown'
             safe_page_id = page_id.replace('/', '_').replace(':', '_')
             key = f"extracted/newspapers_{year}/{safe_page_id}.txt"
@@ -507,8 +614,10 @@ class DataCollector:
                             continue
                         
                         # Convert to high-resolution PDF URL
+                        # Replace pct:6.25 with full/full for high quality
                         pdf_url = iiif_url.replace('/pct:6.25/', '/full/')
                         pdf_url = pdf_url.replace('.jpg', '.pdf')
+                        # Remove fragment if present
                         pdf_url = pdf_url.split('#')[0]
                         
                         self.log(f"\n[{collected+1}] Processing: {title[:80]}")
@@ -517,9 +626,9 @@ class DataCollector:
                         
                         self.newspaper_stats['total'] += 1
                         
-                        # Extract text with Textract
+                        # Extract text with BDA
                         doc_id = f"newspaper_{page_id.replace('/', '_')}"
-                        text_content = self.extract_text_with_textract(pdf_url, doc_id)
+                        text_content = self.extract_text_with_bda(pdf_url, doc_id)
                         
                         if text_content:
                             if self.save_newspaper_to_s3(page_id, date, title, text_content):
@@ -554,6 +663,7 @@ class DataCollector:
         self.log("="*60)
         self.log(f"Configuration:")
         self.log(f"  S3 Bucket: {BUCKET_NAME}")
+        self.log(f"  Bedrock Model: {BEDROCK_MODEL_ID}")
         self.log(f"  Congress Range: {START_CONGRESS} to {END_CONGRESS}")
         self.log(f"  Bill Types: {', '.join(BILL_TYPES)}")
         self.log(f"  Newspaper Years: {START_YEAR} to {END_YEAR}")
@@ -623,6 +733,7 @@ class DataCollector:
                 'congress_range': f"{START_CONGRESS}-{END_CONGRESS}",
                 'bill_types': BILL_TYPES,
                 'newspaper_years': f"{START_YEAR}-{END_YEAR}",
+                'bedrock_model': BEDROCK_MODEL_ID
             },
             'timestamp': datetime.now().isoformat(),
             'errors': self.errors

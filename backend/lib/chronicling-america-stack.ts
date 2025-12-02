@@ -130,14 +130,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
-    // Grant Bedrock Data Automation permissions to Fargate task
+    // Grant Amazon Textract permissions to Fargate task
     fargateTaskRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
-          "bedrock:InvokeDataAutomationAsync",
-          "bedrock:GetDataAutomationStatus",
-          "bedrock:InvokeModel",
+          "textract:DetectDocumentText",
+          "textract:StartDocumentTextDetection",
+          "textract:GetDocumentTextDetection",
         ],
         resources: ["*"],
       })
