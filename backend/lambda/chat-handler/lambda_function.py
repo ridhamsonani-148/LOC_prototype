@@ -109,17 +109,21 @@ def query_knowledge_base(question: str) -> dict:
     """
     print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
     
-    # AWS_REGION is automatically available in Lambda environment
+    # Get AWS context from Lambda environment
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    
+    # Get account ID from Lambda context (available via STS)
+    sts_client = boto3.client('sts')
+    account_id = sts_client.get_caller_identity()['Account']
     
     try:
         # Determine if MODEL_ID is an inference profile or foundation model
-        # Inference profiles start with region or 'us.' or 'eu.' prefix
+        # Inference profiles start with region or 'us.' or 'eu.' or 'global.' prefix
         if BEDROCK_MODEL_ID.startswith(('us.', 'eu.', 'global.')):
-            # It's an inference profile ARN
-            model_arn = f'arn:aws:bedrock:{aws_region}::inference-profile/{BEDROCK_MODEL_ID}'
+            # It's an inference profile ARN - requires account ID
+            model_arn = f'arn:aws:bedrock:{aws_region}:{account_id}:inference-profile/{BEDROCK_MODEL_ID}'
         else:
-            # It's a foundation model ID
+            # It's a foundation model ID - no account ID needed
             model_arn = f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}'
         
         print(f"Using model ARN: {model_arn}")

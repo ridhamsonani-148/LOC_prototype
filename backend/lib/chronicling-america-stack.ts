@@ -288,6 +288,15 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
+    // Grant STS permissions to get account ID (for inference profile ARNs)
+    lambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["sts:GetCallerIdentity"],
+        resources: ["*"],
+      })
+    );
+
     // ========================================
     // Lambda Functions (Only 3 needed!)
     // ========================================
