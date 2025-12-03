@@ -49,24 +49,47 @@ phases:
           echo "Creating Knowledge Base Resources"
           echo "========================================="
           
-          # Step 1: Create Neptune Analytics Graph with Vector Search
-          echo "Step 1: Creating Neptune Analytics graph (16 m-NCUs) with Vector Search..."
-          GRAPH_ID=$(aws neptune-graph create-graph \
-            --graph-name "${PROJECT_NAME}-graph" \
-            --provisioned-memory 16 \
-            --no-public-connectivity \
-            --vector-search-configuration '{"dimension":1024}' \
-            --tags Project="$PROJECT_NAME" \
+          # Step 1: Create or Get Neptune Analytics Graph with Vector Search
+          echo "Step 1: Checking for existing Neptune Analytics graph..."
+          GRAPH_ID=$(aws neptune-graph list-graphs \
             --region "$CDK_DEFAULT_REGION" \
-            --query 'id' --output text)
+            --query "graphs[?name=='${PROJECT_NAME}-graph'].id | [0]" \
+            --output text 2>/dev/null || echo "")
           
-          if [ -z "$GRAPH_ID" ] || [ "$GRAPH_ID" = "None" ]; then
-            echo "✗ Failed to create Neptune Analytics graph"
-            echo "Check if Neptune Analytics is available in region: $CDK_DEFAULT_REGION"
-            exit 1
+          if [ -n "$GRAPH_ID" ] && [ "$GRAPH_ID" != "None" ] && [ "$GRAPH_ID" != "null" ]; then
+            echo "✓ Found existing graph: $GRAPH_ID"
+            
+            # Check graph status
+            STATUS=$(aws neptune-graph get-graph \
+              --graph-identifier "$GRAPH_ID" \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'status' --output text 2>/dev/null || echo "ERROR")
+            
+            if [ "$STATUS" != "AVAILABLE" ]; then
+              echo "⚠ Graph exists but status is: $STATUS. Waiting for it to become available..."
+            else
+              echo "✓ Graph is available"
+            fi
+          else
+            echo "Creating new Neptune Analytics graph (16 m-NCUs) with Vector Search..."
+            GRAPH_ID=$(aws neptune-graph create-graph \
+              --graph-name "${PROJECT_NAME}-graph" \
+              --provisioned-memory 16 \
+              --no-public-connectivity \
+              --vector-search-configuration '{"dimension":1024}' \
+              --tags Project="$PROJECT_NAME" \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'id' --output text)
+            
+            if [ -z "$GRAPH_ID" ] || [ "$GRAPH_ID" = "None" ]; then
+              echo "✗ Failed to create Neptune Analytics graph"
+              echo "Check if Neptune Analytics is available in region: $CDK_DEFAULT_REGION"
+              exit 1
+            fi
+            
+            echo "✓ Graph created: $GRAPH_ID"
           fi
           
-          echo "✓ Graph created: $GRAPH_ID"
           GRAPH_ARN="arn:aws:neptune-graph:${CDK_DEFAULT_REGION}:${AWS_ACCOUNT_ID}:graph/${GRAPH_ID}"
           
           # Step 2: Wait for graph to be available
@@ -101,79 +124,100 @@ phases:
             exit 1
           fi
           
-          # Step 3: Create Knowledge Base
-          echo "Step 3: Creating Bedrock Knowledge Base..."
-          KB_ID=$(aws bedrock-agent create-knowledge-base \
-            --name "${PROJECT_NAME}-knowledge-base" \
-            --role-arn "$KB_ROLE_ARN" \
-            --knowledge-base-configuration '{
-              "type": "VECTOR",
-              "vectorKnowledgeBaseConfiguration": {
-                "embeddingModelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/amazon.titan-embed-text-v2:0"
-              }
-            }' \
-            --storage-configuration '{
-              "type": "NEPTUNE_ANALYTICS",
-              "neptuneAnalyticsConfiguration": {
-                "graphArn": "'"$GRAPH_ARN"'",
-                "fieldMapping": {
-                  "metadataField": "metadata",
-                  "textField": "text"
-                }
-              }
-            }' \
+          # Step 3: Create or Get Knowledge Base
+          echo "Step 3: Checking for existing Bedrock Knowledge Base..."
+          KB_ID=$(aws bedrock-agent list-knowledge-bases \
             --region "$CDK_DEFAULT_REGION" \
-            --query 'knowledgeBase.knowledgeBaseId' --output text)
+            --query "knowledgeBaseSummaries[?name=='${PROJECT_NAME}-knowledge-base'].knowledgeBaseId | [0]" \
+            --output text 2>/dev/null || echo "")
           
-          if [ -z "$KB_ID" ] || [ "$KB_ID" = "None" ]; then
-            echo "✗ Failed to create Knowledge Base"
-            exit 1
-          fi
-          
-          echo "✓ Knowledge Base created: $KB_ID"
-          
-          # Step 4: Create Data Source with Context Enrichment
-          echo "Step 4: Creating Data Source with Context Enrichment..."
-          BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
-          
-          DS_ID=$(aws bedrock-agent create-data-source \
-            --name "${PROJECT_NAME}-s3-datasource" \
-            --description "S3 data source for GraphRAG" \
-            --knowledge-base-id "$KB_ID" \
-            --data-source-configuration '{
-              "type": "S3",
-              "s3Configuration": {
-                "bucketArn": "'"$BUCKET_ARN"'",
-                "inclusionPrefixes": ["extracted/"]
-              }
-            }' \
-            --vector-ingestion-configuration '{
-              "chunkingConfiguration": {
-                "chunkingStrategy": "FIXED_SIZE",
-                "fixedSizeChunkingConfiguration": {
-                  "maxTokens": 1000,
-                  "overlapPercentage": 20
+          if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ] && [ "$KB_ID" != "null" ]; then
+            echo "✓ Found existing Knowledge Base: $KB_ID"
+          else
+            echo "Creating new Bedrock Knowledge Base..."
+            KB_ID=$(aws bedrock-agent create-knowledge-base \
+              --name "${PROJECT_NAME}-knowledge-base" \
+              --role-arn "$KB_ROLE_ARN" \
+              --knowledge-base-configuration '{
+                "type": "VECTOR",
+                "vectorKnowledgeBaseConfiguration": {
+                  "embeddingModelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/amazon.titan-embed-text-v2:0"
                 }
-              },
-              "contextEnrichmentConfiguration": {
-                "type": "BEDROCK_FOUNDATION_MODEL",
-                "bedrockFoundationModelConfiguration": {
-                  "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
-                  "enrichmentStrategyConfiguration": {
-                    "method": "CHUNK_ENTITY_EXTRACTION"
+              }' \
+              --storage-configuration '{
+                "type": "NEPTUNE_ANALYTICS",
+                "neptuneAnalyticsConfiguration": {
+                  "graphArn": "'"$GRAPH_ARN"'",
+                  "fieldMapping": {
+                    "metadataField": "metadata",
+                    "textField": "text"
                   }
                 }
-              }
-            }' \
-            --region "$CDK_DEFAULT_REGION" \
-            --query 'dataSource.dataSourceId' --output text)
-          
-          if [ -z "$DS_ID" ] || [ "$DS_ID" = "None" ]; then
-            echo "✗ Failed to create Data Source"
-            exit 1
+              }' \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'knowledgeBase.knowledgeBaseId' --output text)
+            
+            if [ -z "$KB_ID" ] || [ "$KB_ID" = "None" ]; then
+              echo "✗ Failed to create Knowledge Base"
+              exit 1
+            fi
+            
+            echo "✓ Knowledge Base created: $KB_ID"
           fi
           
-          echo "✓ Data Source created: $DS_ID"
+          # Step 4: Create or Get Data Source with Context Enrichment
+          echo "Step 4: Checking for existing Data Source..."
+          BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
+          
+          DS_ID=$(aws bedrock-agent list-data-sources \
+            --knowledge-base-id "$KB_ID" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query "dataSourceSummaries[?name=='${PROJECT_NAME}-s3-datasource'].dataSourceId | [0]" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$DS_ID" ] && [ "$DS_ID" != "None" ] && [ "$DS_ID" != "null" ]; then
+            echo "✓ Found existing Data Source: $DS_ID"
+          else
+            echo "Creating new Data Source with Context Enrichment..."
+            DS_ID=$(aws bedrock-agent create-data-source \
+              --name "${PROJECT_NAME}-s3-datasource" \
+              --description "S3 data source for GraphRAG" \
+              --knowledge-base-id "$KB_ID" \
+              --data-source-configuration '{
+                "type": "S3",
+                "s3Configuration": {
+                  "bucketArn": "'"$BUCKET_ARN"'",
+                  "inclusionPrefixes": ["extracted/"]
+                }
+              }' \
+              --vector-ingestion-configuration '{
+                "chunkingConfiguration": {
+                  "chunkingStrategy": "FIXED_SIZE",
+                  "fixedSizeChunkingConfiguration": {
+                    "maxTokens": 1000,
+                    "overlapPercentage": 20
+                  }
+                },
+                "contextEnrichmentConfiguration": {
+                  "type": "BEDROCK_FOUNDATION_MODEL",
+                  "bedrockFoundationModelConfiguration": {
+                    "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+                    "enrichmentStrategyConfiguration": {
+                      "method": "CHUNK_ENTITY_EXTRACTION"
+                    }
+                  }
+                }
+              }' \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'dataSource.dataSourceId' --output text)
+            
+            if [ -z "$DS_ID" ] || [ "$DS_ID" = "None" ]; then
+              echo "✗ Failed to create Data Source"
+              exit 1
+            fi
+            
+            echo "✓ Data Source created: $DS_ID"
+          fi
           
           # Step 5: Update Lambda environment variables
           echo "Step 5: Updating Lambda environment variables..."

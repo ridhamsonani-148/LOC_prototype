@@ -113,6 +113,17 @@ def query_knowledge_base(question: str) -> dict:
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
     
     try:
+        # Determine if MODEL_ID is an inference profile or foundation model
+        # Inference profiles start with region or 'us.' or 'eu.' prefix
+        if BEDROCK_MODEL_ID.startswith(('us.', 'eu.', 'global.')):
+            # It's an inference profile ARN
+            model_arn = f'arn:aws:bedrock:{aws_region}::inference-profile/{BEDROCK_MODEL_ID}'
+        else:
+            # It's a foundation model ID
+            model_arn = f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}'
+        
+        print(f"Using model ARN: {model_arn}")
+        
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
                 'text': question
@@ -121,7 +132,7 @@ def query_knowledge_base(question: str) -> dict:
                 'type': 'KNOWLEDGE_BASE',
                 'knowledgeBaseConfiguration': {
                     'knowledgeBaseId': KNOWLEDGE_BASE_ID,
-                    'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}',
+                    'modelArn': model_arn,
                     'retrievalConfiguration': {
                         'vectorSearchConfiguration': {
                             'numberOfResults': 10

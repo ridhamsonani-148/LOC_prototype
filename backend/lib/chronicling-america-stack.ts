@@ -27,6 +27,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     super(scope, id, props);
 
     const projectName = props.projectName;
+    // Use inference profile for cross-region routing, or foundation model for single region
+    // Inference profile: "us.anthropic.claude-sonnet-4-0-v1:0"
+    // Foundation model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
     const bedrockModelId =
       props.bedrockModelId || "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
@@ -311,14 +314,15 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    const fargateTriggerFunction = new lambda.DockerImageFunction(
+    const fargateTriggerFunction = new lambda.PythonFunction(
       this,
       "FargateTriggerFunction",
       {
         functionName: `${projectName}-fargate-trigger`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/fargate-trigger")
-        ),
+        entry: path.join(__dirname, "../lambda/fargate-trigger"),
+        runtime: lambda.Runtime.PYTHON_3_11,
+        index: "lambda_function.py",
+        handler: "lambda_handler",
         timeout: cdk.Duration.seconds(30),
         memorySize: 256,
         role: lambdaRole,
@@ -349,14 +353,15 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    const kbSyncTriggerFunction = new lambda.DockerImageFunction(
+    const kbSyncTriggerFunction = new lambda.PythonFunction(
       this,
       "KBSyncTriggerFunction",
       {
         functionName: `${projectName}-kb-sync-trigger`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/kb-sync-trigger")
-        ),
+        entry: path.join(__dirname, "../lambda/kb-sync-trigger"),
+        runtime: lambda.Runtime.PYTHON_3_11,
+        index: "lambda_function.py",
+        handler: "lambda_handler",
         timeout: cdk.Duration.minutes(2),
         memorySize: 256,
         role: lambdaRole,
@@ -386,14 +391,15 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const chatHandlerFunction = new lambda.DockerImageFunction(
+    const chatHandlerFunction = new lambda.PythonFunction(
       this,
       "ChatHandlerFunction",
       {
         functionName: `${projectName}-chat-handler`,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../lambda/chat-handler")
-        ),
+        entry: path.join(__dirname, "../lambda/chat-handler"),
+        runtime: lambda.Runtime.PYTHON_3_11,
+        index: "lambda_function.py",
+        handler: "lambda_handler",
         timeout: cdk.Duration.seconds(30),
         memorySize: 1024,
         role: lambdaRole,
