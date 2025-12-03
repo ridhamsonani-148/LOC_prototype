@@ -314,15 +314,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    const fargateTriggerFunction = new lambda.PythonFunction(
+    const fargateTriggerFunction = new lambda.DockerImageFunction(
       this,
       "FargateTriggerFunction",
       {
         functionName: `${projectName}-fargate-trigger`,
-        entry: path.join(__dirname, "../lambda/fargate-trigger"),
-        runtime: lambda.Runtime.PYTHON_3_11,
-        index: "lambda_function.py",
-        handler: "lambda_handler",
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/fargate-trigger")
+        ),
         timeout: cdk.Duration.seconds(30),
         memorySize: 256,
         role: lambdaRole,
@@ -353,15 +352,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       }
     );
 
-    const kbSyncTriggerFunction = new lambda.PythonFunction(
+    const kbSyncTriggerFunction = new lambda.DockerImageFunction(
       this,
       "KBSyncTriggerFunction",
       {
         functionName: `${projectName}-kb-sync-trigger`,
-        entry: path.join(__dirname, "../lambda/kb-sync-trigger"),
-        runtime: lambda.Runtime.PYTHON_3_11,
-        index: "lambda_function.py",
-        handler: "lambda_handler",
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/kb-sync-trigger")
+        ),
         timeout: cdk.Duration.minutes(2),
         memorySize: 256,
         role: lambdaRole,
@@ -391,15 +389,14 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const chatHandlerFunction = new lambda.PythonFunction(
+    const chatHandlerFunction = new lambda.DockerImageFunction(
       this,
       "ChatHandlerFunction",
       {
         functionName: `${projectName}-chat-handler`,
-        entry: path.join(__dirname, "../lambda/chat-handler"),
-        runtime: lambda.Runtime.PYTHON_3_11,
-        index: "lambda_function.py",
-        handler: "lambda_handler",
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/chat-handler")
+        ),
         timeout: cdk.Duration.seconds(30),
         memorySize: 1024,
         role: lambdaRole,
