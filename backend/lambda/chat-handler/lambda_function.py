@@ -208,7 +208,8 @@ Answer:"""
                     },
                     'retrievalConfiguration': {
                         'vectorSearchConfiguration': {
-                            'numberOfResults': 10
+                            'numberOfResults': 100,  # Retrieve 100 source chunks
+                            'overrideSearchType': 'HYBRID'  # Use both semantic and keyword search
                         }
                     }
                 }
