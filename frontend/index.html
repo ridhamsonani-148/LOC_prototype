@@ -69,9 +69,25 @@
             transition: border-color 0.3s;
         }
 
-        .config-section input:focus {
+        .config-section input:focus,
+        .config-section select:focus {
             outline: none;
             border-color: #667eea;
+        }
+
+        .config-section select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+
+        .config-section select option {
+            padding: 10px;
         }
 
         .config-section small {
@@ -267,6 +283,19 @@
             <small>Enter your API Gateway endpoint URL from CDK outputs</small>
         </div>
 
+        <div class="config-section" style="border-bottom: none;">
+            <label for="personaSelect">
+                👤 Select Your Role
+            </label>
+            <select id="personaSelect" style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 14px; background: white; cursor: pointer;">
+                <option value="general">General User - Balanced and accessible responses</option>
+                <option value="congressional_staffer">Congressional Staffer - Formal, authoritative with citations</option>
+                <option value="research_journalist">Research Journalist - Contextual and engaging narratives</option>
+                <option value="law_student">Law Student - Educational with legal analysis</option>
+            </select>
+            <small id="personaDescription">Responses will be tailored to your selected role and expertise level</small>
+        </div>
+
         <div class="chat-container" id="chatContainer">
             <div class="message system">
                 <div class="message-content">
@@ -276,19 +305,19 @@
         </div>
 
         <div class="suggestions">
-            <h3>💡 Try asking:</h3>
+            <h3>💡 Sample questions by persona:</h3>
             <div class="suggestion-chips">
-                <div class="suggestion-chip" onclick="askQuestion('What newspapers are in the database?')">
-                    What newspapers are in the database?
+                <div class="suggestion-chip" onclick="askQuestion('What was the original thought behind the requirements for being a member of the House in the Constitution?')">
+                    House membership requirements
                 </div>
-                <div class="suggestion-chip" onclick="askQuestion('Who are the people mentioned?')">
-                    Who are the people mentioned?
+                <div class="suggestion-chip" onclick="askQuestion('How has the Constitution and the Courts evolved over the years on interstate waterways trade?')">
+                    Interstate waterways trade
                 </div>
-                <div class="suggestion-chip" onclick="askQuestion('What locations are mentioned?')">
-                    What locations are mentioned?
+                <div class="suggestion-chip" onclick="askQuestion('How did the Louisiana Purchase define executive power?')">
+                    Louisiana Purchase & executive power
                 </div>
-                <div class="suggestion-chip" onclick="askQuestion('Tell me about events in August 1815')">
-                    Tell me about events in August 1815
+                <div class="suggestion-chip" onclick="askQuestion('How has the Commerce clause evolved through landmark Court cases?')">
+                    Commerce clause evolution
                 </div>
             </div>
         </div>
@@ -309,12 +338,29 @@
         const apiUrlInput = document.getElementById('apiUrl');
         const sendButton = document.getElementById('sendButton');
         const statusIndicator = document.getElementById('statusIndicator');
+        const personaSelect = document.getElementById('personaSelect');
+        const personaDescription = document.getElementById('personaDescription');
 
-        // Load API URL from localStorage
+        // Persona descriptions
+        const personaDescriptions = {
+            'general': 'Responses will be balanced, clear, and accessible for general audiences',
+            'congressional_staffer': 'Responses will be formal and authoritative with specific citations and precedents',
+            'research_journalist': 'Responses will include cultural context and engaging narratives suitable for news articles',
+            'law_student': 'Responses will be educational with comprehensive legal analysis and case references'
+        };
+
+        // Load saved settings from localStorage
         const savedApiUrl = localStorage.getItem('apiUrl');
+        const savedPersona = localStorage.getItem('persona');
+        
         if (savedApiUrl) {
             apiUrlInput.value = savedApiUrl;
             updateStatus(true);
+        }
+        
+        if (savedPersona) {
+            personaSelect.value = savedPersona;
+            updatePersonaDescription(savedPersona);
         }
 
         // Save API URL on change
@@ -322,6 +368,26 @@
             localStorage.setItem('apiUrl', apiUrlInput.value);
             updateStatus(!!apiUrlInput.value);
         });
+
+        // Save persona on change and update description
+        personaSelect.addEventListener('change', () => {
+            const selectedPersona = personaSelect.value;
+            localStorage.setItem('persona', selectedPersona);
+            updatePersonaDescription(selectedPersona);
+            
+            // Add system message about persona change
+            const personaNames = {
+                'general': 'General User',
+                'congressional_staffer': 'Congressional Staffer',
+                'research_journalist': 'Research Journalist',
+                'law_student': 'Law Student'
+            };
+            addMessage(`👤 Switched to <strong>${personaNames[selectedPersona]}</strong> mode. Responses will be tailored accordingly.`, 'system');
+        });
+
+        function updatePersonaDescription(persona) {
+            personaDescription.textContent = personaDescriptions[persona] || personaDescriptions['general'];
+        }
 
         function updateStatus(connected) {
             statusIndicator.className = `status-indicator ${connected ? 'connected' : 'disconnected'}`;
@@ -376,12 +442,17 @@
             addMessage('<span class="loading"></span> <span class="loading"></span> <span class="loading"></span> Thinking...', 'assistant');
 
             try {
+                const selectedPersona = personaSelect.value;
+                
                 const response = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ question })
+                    body: JSON.stringify({ 
+                        question,
+                        persona: selectedPersona
+                    })
                 });
 
                 // Remove loading message

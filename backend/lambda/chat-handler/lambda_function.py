@@ -44,6 +44,7 @@ def lambda_handler(event, context):
     try:
         body = json.loads(event.get('body', '{}'))
         question = body.get('question', '')
+        persona = body.get('persona', 'general')  # congressional_staffer, research_journalist, law_student, general
         
         if not question:
             return {
@@ -56,6 +57,7 @@ def lambda_handler(event, context):
             }
         
         print(f"Question: {question}")
+        print(f"Persona: {persona}")
         
         # Check if Knowledge Base is configured
         if not KNOWLEDGE_BASE_ID:
@@ -72,7 +74,7 @@ def lambda_handler(event, context):
             }
         
         # Query Knowledge Base with GraphRAG
-        response = query_knowledge_base(question)
+        response = query_knowledge_base(question, persona)
         
         return {
             'statusCode': 200,
@@ -102,7 +104,56 @@ def lambda_handler(event, context):
         }
 
 
-def query_knowledge_base(question: str) -> dict:
+def get_persona_prompt(persona: str) -> str:
+    """
+    Get system prompt based on user persona
+    """
+    prompts = {
+        'congressional_staffer': """You are an expert constitutional research assistant for Congressional staff. 
+Your responses should be:
+- Precise and authoritative with specific citations
+- Focused on precedent and constitutional interpretation
+- Include relevant Federalist Papers references when applicable
+- Provide historical context for legislative decisions
+- Use formal, professional language suitable for briefing members of Congress
+- Cite specific articles, sections, and amendments
+- Reference relevant Supreme Court cases with case names and years""",
+        
+        'research_journalist': """You are a constitutional expert helping journalists research stories.
+Your responses should be:
+- Provide cultural and historical context from the era
+- Explain constitutional language in accessible terms
+- Connect constitutional provisions to modern relevance
+- Include interesting historical anecdotes and context
+- Explain the "why" behind constitutional decisions
+- Reference the social and political climate of the time
+- Use clear, engaging language suitable for news articles""",
+        
+        'law_student': """You are a constitutional law professor helping students learn.
+Your responses should be:
+- Educational and comprehensive
+- Explain legal reasoning and constitutional theory
+- Trace the evolution of constitutional interpretation
+- Reference landmark cases with detailed analysis
+- Explain both majority and dissenting opinions
+- Connect constitutional provisions to broader legal principles
+- Use precise legal terminology with explanations
+- Encourage critical thinking about constitutional questions""",
+        
+        'general': """You are a knowledgeable constitutional expert.
+Your responses should be:
+- Clear and informative
+- Balanced and objective
+- Include relevant historical context
+- Cite specific constitutional provisions
+- Reference important court cases when relevant
+- Use accessible language while maintaining accuracy"""
+    }
+    
+    return prompts.get(persona, prompts['general'])
+
+
+def query_knowledge_base(question: str, persona: str = 'general') -> dict:
     """
     Query Bedrock Knowledge Base with GraphRAG
     Neptune Analytics graph provides automatic entity extraction and relationships
@@ -127,6 +178,10 @@ def query_knowledge_base(question: str) -> dict:
             model_arn = f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}'
         
         print(f"Using model ARN: {model_arn}")
+        print(f"Using persona: {persona}")
+        
+        # Get persona-specific system prompt
+        system_prompt = get_persona_prompt(persona)
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
@@ -137,6 +192,20 @@ def query_knowledge_base(question: str) -> dict:
                 'knowledgeBaseConfiguration': {
                     'knowledgeBaseId': KNOWLEDGE_BASE_ID,
                     'modelArn': model_arn,
+                    'generationConfiguration': {
+                        'promptTemplate': {
+                            'textPromptTemplate': f"""{system_prompt}
+
+Use the following retrieved context to answer the question. If you don't know the answer based on the context, say so.
+
+Context:
+$search_results$
+
+Question: $query$
+
+Answer:"""
+                        }
+                    },
                     'retrievalConfiguration': {
                         'vectorSearchConfiguration': {
                             'numberOfResults': 10
