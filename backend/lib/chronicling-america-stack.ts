@@ -283,6 +283,8 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:InvokeModel",
           "bedrock:Retrieve",
           "bedrock:RetrieveAndGenerate",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles",
         ],
         resources: ["*"],
       })
