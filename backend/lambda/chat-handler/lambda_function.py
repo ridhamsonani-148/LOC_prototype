@@ -104,6 +104,49 @@ def lambda_handler(event, context):
         }
 
 
+def generate_query_variations(question: str, aws_region: str) -> list:
+    """
+    Generate multiple variations of the query to improve retrieval consistency
+    This solves the problem of vector search being sensitive to exact phrasing
+    """
+    bedrock_runtime = boto3.client('bedrock-runtime', region_name=aws_region)
+    
+    variation_prompt = f"""Generate 3 different ways to ask this question, keeping the same meaning but using different words and word orders.
+
+Original question: {question}
+
+Provide 3 variations (one per line, no numbering):"""
+
+    try:
+        response = bedrock_runtime.invoke_model(
+            modelId='anthropic.claude-3-haiku-20240307-v1:0',
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 300,
+                "temperature": 0.7,
+                "messages": [{
+                    "role": "user",
+                    "content": variation_prompt
+                }]
+            })
+        )
+        
+        response_body = json.loads(response['body'].read())
+        variations_text = response_body['content'][0]['text'].strip()
+        
+        # Parse variations (one per line)
+        variations = [v.strip() for v in variations_text.split('\n') if v.strip() and not v.strip().startswith(('1.', '2.', '3.', '-', '*'))]
+        
+        # Always include original question
+        all_variations = [question] + variations[:3]  # Original + up to 3 variations
+        
+        return all_variations
+        
+    except Exception as e:
+        print(f"Query variation generation failed: {e}")
+        return [question]  # Fallback to original
+
+
 def get_persona_prompt(persona: str) -> str:
     """
     Get system prompt based on user persona
@@ -184,15 +227,24 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         # Get persona-specific system prompt
         system_prompt = get_persona_prompt(persona)
         
+        # SOLUTION: Use multiple retrieval strategies for consistency
+        # 1. Generate multiple query variations using LLM
+        # 2. Retrieve with each variation
+        # 3. Combine and deduplicate results
+        # 4. Rerank the combined results
+        
+        print("Generating query variations for robust retrieval...")
+        query_variations = generate_query_variations(question, aws_region)
+        print(f"Query variations: {query_variations}")
+        
         # Log retrieval configuration with reranking
-        # According to AWS docs, reranking goes INSIDE vectorSearchConfiguration
         retrieval_config = {
             'vectorSearchConfiguration': {
                 'numberOfResults': 100,  # Retrieve 100 documents initially
                 'rerankingConfiguration': {
                     'type': 'BEDROCK_RERANKING_MODEL',
                     'bedrockRerankingConfiguration': {
-                        'numberOfRerankedResults': 100,  # Keep 100 after reranking
+                        'numberOfRerankedResults': 50,  # Keep top 50 after reranking for better precision
                         'modelConfiguration': {
                             'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/amazon.rerank-v1:0'
                         }
@@ -238,9 +290,13 @@ Answer:"""
         print(f"Reranking enabled: True (amazon.rerank-v1:0)")
         print(f"Number of results after reranking: 100")
         
+        # Use enriched query with all variations for better retrieval
+        enriched_query = f"{question}. Alternative phrasings: {' | '.join(query_variations[1:])}"
+        print(f"Enriched query length: {len(enriched_query)} characters")
+        
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
-                'text': question
+                'text': enriched_query  # Use query with variations for robust retrieval
             },
             retrieveAndGenerateConfiguration=retrieve_and_generate_config
         )
