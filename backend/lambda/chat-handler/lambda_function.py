@@ -286,7 +286,6 @@ Answer:"""
                     'inferenceConfig': {
                         'textInferenceConfig': {
                             'temperature': 0.0,  # Deterministic generation
-                            'topP': 1.0,
                             'maxTokens': 2000
                         }
                     }
