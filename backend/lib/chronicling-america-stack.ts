@@ -285,6 +285,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
           "bedrock:RetrieveAndGenerate",
           "bedrock:GetInferenceProfile",
           "bedrock:ListInferenceProfiles",
+          "bedrock:Rerank",  // For reranker model
         ],
         resources: ["*"],
       })

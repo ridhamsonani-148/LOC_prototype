@@ -185,25 +185,23 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         system_prompt = get_persona_prompt(persona)
         
         # Log retrieval configuration with reranking
+        # According to AWS docs, reranking goes INSIDE vectorSearchConfiguration
         retrieval_config = {
             'vectorSearchConfiguration': {
-                'numberOfResults': 100  # Retrieve 100 documents initially
-            }
-        }
-        
-        # Add reranking configuration
-        reranking_config = {
-            'type': 'BEDROCK_RERANKING_MODEL',
-            'bedrockRerankingConfiguration': {
-                'numberOfResults': 100,  # Keep all 100 after reranking (or set lower like 20)
-                'modelConfiguration': {
-                    'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/amazon.rerank-v1:0'
+                'numberOfResults': 100,  # Retrieve 100 documents initially
+                'rerankingConfiguration': {
+                    'type': 'BEDROCK_RERANKING_MODEL',
+                    'bedrockRerankingConfiguration': {
+                        'numberOfRerankedResults': 100,  # Keep 100 after reranking
+                        'modelConfiguration': {
+                            'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/amazon.rerank-v1:0'
+                        }
+                    }
                 }
             }
         }
         
-        print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
-        print(f"Reranking Configuration: {json.dumps(reranking_config, indent=2)}")
+        print(f"Retrieval Configuration with Reranking: {json.dumps(retrieval_config, indent=2)}")
         
         # Build the full configuration
         retrieve_and_generate_config = {
@@ -234,14 +232,11 @@ Answer:"""
             }
         }
         
-        # Add reranking to the configuration
-        retrieve_and_generate_config['knowledgeBaseConfiguration']['rerankingConfiguration'] = reranking_config
-        
-        print(f"Full Configuration: {json.dumps({k: v for k, v in retrieve_and_generate_config.items() if k != 'knowledgeBaseConfiguration'}, indent=2)}")
+        print(f"Full Configuration Type: {retrieve_and_generate_config['type']}")
         print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
-        print(f"Number of results to retrieve: {retrieval_config['vectorSearchConfiguration']['numberOfResults']}")
-        print(f"Reranking enabled: True")
-        print(f"Number of results after reranking: {reranking_config['bedrockRerankingConfiguration']['numberOfResults']}")
+        print(f"Number of results to retrieve: 100")
+        print(f"Reranking enabled: True (amazon.rerank-v1:0)")
+        print(f"Number of results after reranking: 100")
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
