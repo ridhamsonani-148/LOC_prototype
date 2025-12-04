@@ -208,8 +208,9 @@ Answer:"""
                     },
                     'retrievalConfiguration': {
                         'vectorSearchConfiguration': {
-                            'numberOfResults': 100,  # Retrieve 100 source chunks
-                            'overrideSearchType': 'HYBRID'  # Use both semantic and keyword search
+                            'numberOfResults': 100  # Retrieve 100 source chunks
+                            # Note: HYBRID search not supported with Neptune Analytics
+                            # Neptune uses vector search by default
                         }
                     }
                 }
