@@ -183,18 +183,23 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         # Get persona-specific system prompt
         system_prompt = get_persona_prompt(persona)
         
-        response = bedrock_agent_runtime.retrieve_and_generate(
-            input={
-                'text': question
-            },
-            retrieveAndGenerateConfiguration={
-                'type': 'KNOWLEDGE_BASE',
-                'knowledgeBaseConfiguration': {
-                    'knowledgeBaseId': KNOWLEDGE_BASE_ID,
-                    'modelArn': model_arn,
-                    'generationConfiguration': {
-                        'promptTemplate': {
-                            'textPromptTemplate': f"""{system_prompt}
+        # Log retrieval configuration
+        retrieval_config = {
+            'vectorSearchConfiguration': {
+                'numberOfResults': 100
+            }
+        }
+        print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
+        
+        # Build the full configuration
+        retrieve_and_generate_config = {
+            'type': 'KNOWLEDGE_BASE',
+            'knowledgeBaseConfiguration': {
+                'knowledgeBaseId': KNOWLEDGE_BASE_ID,
+                'modelArn': model_arn,
+                'generationConfiguration': {
+                    'promptTemplate': {
+                        'textPromptTemplate': f"""{system_prompt}
 
 Use the following retrieved context to answer the question. If you don't know the answer based on the context, say so.
 
@@ -204,38 +209,52 @@ $search_results$
 Question: $query$
 
 Answer:"""
-                        }
-                    },
-                    'retrievalConfiguration': {
-                        'vectorSearchConfiguration': {
-                            'numberOfResults': 100  # Retrieve 100 source chunks
-                            # Note: HYBRID search not supported with Neptune Analytics
-                            # Neptune uses vector search by default
-                        }
                     }
-                }
+                },
+                'retrievalConfiguration': retrieval_config
             }
+        }
+        
+        print(f"Full Configuration: {json.dumps({k: v for k, v in retrieve_and_generate_config.items() if k != 'knowledgeBaseConfiguration'}, indent=2)}")
+        print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
+        print(f"Number of results to retrieve: {retrieval_config['vectorSearchConfiguration']['numberOfResults']}")
+        
+        response = bedrock_agent_runtime.retrieve_and_generate(
+            input={
+                'text': question
+            },
+            retrieveAndGenerateConfiguration=retrieve_and_generate_config
         )
         
         # Extract answer and sources
         answer = response['output']['text']
         
+        # Log response structure
+        print(f"Response keys: {list(response.keys())}")
+        
         # Extract sources (documents that were retrieved)
         sources = []
         if 'citations' in response:
+            print(f"Number of citations: {len(response['citations'])}")
             for citation in response['citations']:
-                for reference in citation.get('retrievedReferences', []):
+                retrieved_refs = citation.get('retrievedReferences', [])
+                print(f"Citation has {len(retrieved_refs)} retrieved references")
+                for reference in retrieved_refs:
                     sources.append({
                         'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
                         'content': reference.get('content', {}).get('text', '')[:200] + '...'
                     })
+        else:
+            print("No citations in response")
         
         # Extract entities (if available in response metadata)
         entities = []
         if 'metadata' in response:
             entities = response['metadata'].get('entities', [])
+            print(f"Found {len(entities)} entities in metadata")
         
         print(f"Answer generated with {len(sources)} sources")
+        print(f"Total unique documents retrieved: {len(set(s['document_id'] for s in sources))}")
         
         return {
             'answer': answer,
