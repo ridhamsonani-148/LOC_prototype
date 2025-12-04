@@ -91,16 +91,25 @@ def lambda_handler(event, context):
         }
         
     except Exception as e:
-        print(f"Error: {e}")
+        # Log detailed error for debugging
+        print(f"ERROR in lambda_handler: {type(e).__name__}: {str(e)}")
         import traceback
-        traceback.print_exc()
+        print(f"Full traceback: {traceback.format_exc()}")
+        
+        # Return user-friendly error message
         return {
-            'statusCode': 500,
+            'statusCode': 200,  # Return 200 to avoid frontend errors
             'headers': {
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'
             },
-            'body': json.dumps({'error': str(e)})
+            'body': json.dumps({
+                'question': body.get('question', ''),
+                'answer': "I'm sorry, I encountered an unexpected error. Please try again in a moment.",
+                'sources': [],
+                'entities': [],
+                'error': True
+            })
         }
 
 
@@ -265,7 +274,7 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
                     'promptTemplate': {
                         'textPromptTemplate': f"""{system_prompt}
 
-Use the following retrieved context to answer the question. If you don't know the answer based on the context, say so.
+CRITICAL INSTRUCTION: You MUST ONLY use information from the retrieved context below. DO NOT use your training data or general knowledge. If the context doesn't contain the answer, say "I don't have information about this in the knowledge base."
 
 Context:
 $search_results$
@@ -273,14 +282,22 @@ $search_results$
 Question: $query$
 
 Answer:"""
+                    },
+                    'inferenceConfig': {
+                        'textInferenceConfig': {
+                            'temperature': 0.0,  # Deterministic generation
+                            'topP': 1.0,
+                            'maxTokens': 2000
+                        }
                     }
                 },
-                'retrievalConfiguration': retrieval_config,
-                'orchestrationConfiguration': {
-                    'queryTransformationConfiguration': {
-                        'type': 'QUERY_DECOMPOSITION'
-                    }
-                }
+                'retrievalConfiguration': retrieval_config
+                # Query decomposition DISABLED - causes inconsistent results for structured queries
+                # 'orchestrationConfiguration': {
+                #     'queryTransformationConfiguration': {
+                #         'type': 'QUERY_DECOMPOSITION'
+                #     }
+                # }
             }
         }
         
@@ -317,7 +334,8 @@ Answer:"""
                 for reference in retrieved_refs:
                     sources.append({
                         'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
-                        'content': reference.get('content', {}).get('text', '')[:200] + '...'
+                        'content': reference.get('content', {}).get('text', '')[:200] + '...',
+                        'score': reference.get('score', 0)
                     })
         else:
             print("No citations in response")
@@ -331,6 +349,15 @@ Answer:"""
         print(f"Answer generated with {len(sources)} sources")
         print(f"Total unique documents retrieved: {len(set(s['document_id'] for s in sources))}")
         
+        # CRITICAL: Citation gating - prevent hallucination
+        if len(sources) == 0:
+            print("WARNING: No sources retrieved - blocking hallucinated response")
+            return {
+                'answer': "I couldn't find any relevant information in the knowledge base to answer your question. Please try rephrasing your query or ask about a different topic.",
+                'sources': [],
+                'entities': []
+            }
+        
         return {
             'answer': answer,
             'sources': sources,
@@ -338,9 +365,15 @@ Answer:"""
         }
         
     except Exception as e:
-        print(f"Error querying Knowledge Base: {e}")
+        # Log detailed error for debugging
+        print(f"ERROR querying Knowledge Base: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        
+        # Return user-friendly message (don't expose internal errors)
         return {
-            'answer': f"I encountered an error querying the knowledge base: {str(e)}",
+            'answer': "I'm sorry, I couldn't process your question at this time. Please try again in a moment. If the problem persists, try rephrasing your question.",
             'sources': [],
-            'entities': []
+            'entities': [],
+            'error': True  # Flag for frontend to handle differently
         }
