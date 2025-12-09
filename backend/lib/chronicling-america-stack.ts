@@ -394,7 +394,38 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     //   { prefix: "extracted/", suffix: ".txt" }
     // );
 
-    // 3. Chat Handler Lambda
+    // 3. KB Transformation Lambda (for GraphRAG structure)
+    const kbTransformationLogGroup = new logs.LogGroup(
+      this,
+      "KBTransformationLogGroup",
+      {
+        logGroupName: `/aws/lambda/${projectName}-kb-transformation`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }
+    );
+
+    const kbTransformationFunction = new lambda.DockerImageFunction(
+      this,
+      "KBTransformationFunction",
+      {
+        functionName: `${projectName}-kb-transformation`,
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../lambda/kb-transformation")
+        ),
+        timeout: cdk.Duration.seconds(60),
+        memorySize: 512,
+        role: lambdaRole,
+        logGroup: kbTransformationLogGroup,
+      }
+    );
+
+    // Grant Knowledge Base permission to invoke transformation Lambda
+    kbTransformationFunction.grantInvoke(
+      new iam.ServicePrincipal("bedrock.amazonaws.com")
+    );
+
+    // 4. Chat Handler Lambda
     const chatHandlerLogGroup = new logs.LogGroup(this, "ChatHandlerLogGroup", {
       logGroupName: `/aws/lambda/${projectName}-chat-handler`,
       retention: logs.RetentionDays.ONE_WEEK,
@@ -502,6 +533,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     new cdk.CfnOutput(this, "BedrockModelId", {
       value: bedrockModelId,
       description: "Bedrock model ID used for chat responses",
+    });
+
+    new cdk.CfnOutput(this, "KBTransformationFunctionArn", {
+      value: kbTransformationFunction.functionArn,
+      description: "Transformation Lambda ARN for Knowledge Base GraphRAG",
+      exportName: `${projectName}-kb-transformation-arn`,
     });
   }
 }

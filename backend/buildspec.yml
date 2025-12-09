@@ -165,8 +165,23 @@ phases:
             echo "✓ Knowledge Base created: $KB_ID"
           fi
           
-          # Step 4: Create or Get Data Source with Context Enrichment
-          echo "Step 4: Checking for existing Data Source..."
+          # Step 4: Get Transformation Lambda ARN
+          echo "Step 4: Getting Transformation Lambda ARN..."
+          TRANSFORMATION_LAMBDA_ARN=$(aws lambda get-function \
+            --function-name "${PROJECT_NAME}-kb-transformation" \
+            --region "$CDK_DEFAULT_REGION" \
+            --query 'Configuration.FunctionArn' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$TRANSFORMATION_LAMBDA_ARN" ] || [ "$TRANSFORMATION_LAMBDA_ARN" = "None" ]; then
+            echo "⚠ Transformation Lambda not found, proceeding without custom transformation"
+            TRANSFORMATION_LAMBDA_ARN=""
+          else
+            echo "✓ Found Transformation Lambda: $TRANSFORMATION_LAMBDA_ARN"
+          fi
+          
+          # Step 5: Create or Get Data Source with Custom Transformation
+          echo "Step 5: Checking for existing Data Source..."
           BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
           
           DS_ID=$(aws bedrock-agent list-data-sources \
@@ -178,38 +193,93 @@ phases:
           if [ -n "$DS_ID" ] && [ "$DS_ID" != "None" ] && [ "$DS_ID" != "null" ]; then
             echo "✓ Found existing Data Source: $DS_ID"
           else
-            echo "Creating new Data Source with Context Enrichment..."
-            DS_ID=$(aws bedrock-agent create-data-source \
-              --name "${PROJECT_NAME}-s3-datasource" \
-              --description "S3 data source for GraphRAG" \
-              --knowledge-base-id "$KB_ID" \
-              --data-source-configuration '{
-                "type": "S3",
-                "s3Configuration": {
-                  "bucketArn": "'"$BUCKET_ARN"'",
-                  "inclusionPrefixes": ["extracted/"]
-                }
-              }' \
-              --vector-ingestion-configuration '{
-                "chunkingConfiguration": {
-                  "chunkingStrategy": "FIXED_SIZE",
-                  "fixedSizeChunkingConfiguration": {
-                    "maxTokens": 1000,
-                    "overlapPercentage": 20
+            echo "Creating new Data Source with Custom Transformation for GraphRAG..."
+            
+            # Build data source configuration with custom transformation
+            if [ -n "$TRANSFORMATION_LAMBDA_ARN" ]; then
+              # With custom transformation Lambda
+              DS_ID=$(aws bedrock-agent create-data-source \
+                --name "${PROJECT_NAME}-s3-datasource" \
+                --description "S3 data source for GraphRAG with custom transformation" \
+                --knowledge-base-id "$KB_ID" \
+                --data-source-configuration '{
+                  "type": "S3",
+                  "s3Configuration": {
+                    "bucketArn": "'"$BUCKET_ARN"'",
+                    "inclusionPrefixes": ["extracted/"]
                   }
-                },
-                "contextEnrichmentConfiguration": {
-                  "type": "BEDROCK_FOUNDATION_MODEL",
-                  "bedrockFoundationModelConfiguration": {
-                    "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
-                    "enrichmentStrategyConfiguration": {
-                      "method": "CHUNK_ENTITY_EXTRACTION"
+                }' \
+                --vector-ingestion-configuration '{
+                  "chunkingConfiguration": {
+                    "chunkingStrategy": "FIXED_SIZE",
+                    "fixedSizeChunkingConfiguration": {
+                      "maxTokens": 1000,
+                      "overlapPercentage": 20
+                    }
+                  },
+                  "customTransformationConfiguration": {
+                    "intermediateStorage": {
+                      "s3Location": {
+                        "uri": "s3://'"$DATA_BUCKET"'/transformation-temp/"
+                      }
+                    },
+                    "transformations": [
+                      {
+                        "stepToApply": "POST_CHUNKING",
+                        "transformationFunction": {
+                          "transformationLambdaConfiguration": {
+                            "lambdaArn": "'"$TRANSFORMATION_LAMBDA_ARN"'"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "contextEnrichmentConfiguration": {
+                    "type": "BEDROCK_FOUNDATION_MODEL",
+                    "bedrockFoundationModelConfiguration": {
+                      "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+                      "enrichmentStrategyConfiguration": {
+                        "method": "CHUNK_ENTITY_EXTRACTION"
+                      }
                     }
                   }
-                }
-              }' \
-              --region "$CDK_DEFAULT_REGION" \
-              --query 'dataSource.dataSourceId' --output text)
+                }' \
+                --region "$CDK_DEFAULT_REGION" \
+                --query 'dataSource.dataSourceId' --output text)
+            else
+              # Without custom transformation (fallback)
+              DS_ID=$(aws bedrock-agent create-data-source \
+                --name "${PROJECT_NAME}-s3-datasource" \
+                --description "S3 data source for GraphRAG" \
+                --knowledge-base-id "$KB_ID" \
+                --data-source-configuration '{
+                  "type": "S3",
+                  "s3Configuration": {
+                    "bucketArn": "'"$BUCKET_ARN"'",
+                    "inclusionPrefixes": ["extracted/"]
+                  }
+                }' \
+                --vector-ingestion-configuration '{
+                  "chunkingConfiguration": {
+                    "chunkingStrategy": "FIXED_SIZE",
+                    "fixedSizeChunkingConfiguration": {
+                      "maxTokens": 1000,
+                      "overlapPercentage": 20
+                    }
+                  },
+                  "contextEnrichmentConfiguration": {
+                    "type": "BEDROCK_FOUNDATION_MODEL",
+                    "bedrockFoundationModelConfiguration": {
+                      "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+                      "enrichmentStrategyConfiguration": {
+                        "method": "CHUNK_ENTITY_EXTRACTION"
+                      }
+                    }
+                  }
+                }' \
+                --region "$CDK_DEFAULT_REGION" \
+                --query 'dataSource.dataSourceId' --output text)
+            fi
             
             if [ -z "$DS_ID" ] || [ "$DS_ID" = "None" ]; then
               echo "✗ Failed to create Data Source"
@@ -219,8 +289,8 @@ phases:
             echo "✓ Data Source created: $DS_ID"
           fi
           
-          # Step 5: Update Lambda environment variables
-          echo "Step 5: Updating Lambda environment variables..."
+          # Step 6: Update Lambda environment variables
+          echo "Step 6: Updating Lambda environment variables..."
           
           # Get current fargate-trigger Lambda config to preserve existing values
           FARGATE_ENV=$(aws lambda get-function-configuration \
