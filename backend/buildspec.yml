@@ -41,7 +41,7 @@ phases:
           
           echo "Extracting outputs..."
           DATA_BUCKET=$(cat outputs.json | jq -r '.LOCstack.DataBucketName // empty')
-          TRANSFORMATION_BUCKET=$(cat outputs.json | jq -r '.LOCstack.TransformationBucketName // empty')
+
           KB_ROLE_ARN=$(cat outputs.json | jq -r '.LOCstack.KnowledgeBaseRoleArn // empty')
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           

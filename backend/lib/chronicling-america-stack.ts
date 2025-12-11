@@ -47,13 +47,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       eventBridgeEnabled: true, // Enable EventBridge for S3 events
     });
 
-    // Separate bucket for transformation intermediate storage
-    const transformationBucket = new s3.Bucket(this, "TransformationBucket", {
-      bucketName: `${projectName}-transformation-${this.account}-${this.region}`,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.DESTROY, // Can be destroyed since it's just temp storage
-    });
+    // Note: Transformation bucket removed since we're using automatic processing
 
     // Grant Bedrock service access to both S3 buckets
     dataBucket.addToResourcePolicy(
@@ -70,19 +64,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
-    transformationBucket.addToResourcePolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        principals: [new iam.ServicePrincipal("bedrock.amazonaws.com")],
-        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-        resources: [transformationBucket.bucketArn, `${transformationBucket.bucketArn}/*`],
-        conditions: {
-          StringEquals: {
-            "aws:SourceAccount": this.account,
-          },
-        },
-      })
-    );
+
 
     // ========================================
     // VPC for Fargate (minimal setup)
@@ -225,7 +207,6 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     // Grant S3 permissions to Knowledge Base role
     dataBucket.grantRead(knowledgeBaseRole);
-    transformationBucket.grantReadWrite(knowledgeBaseRole);
 
     // Grant Neptune Analytics permissions
     knowledgeBaseRole.addToPolicy(
@@ -576,11 +557,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       exportName: `${projectName}-data-bucket`,
     });
 
-    new cdk.CfnOutput(this, "TransformationBucketName", {
-      value: transformationBucket.bucketName,
-      description: "S3 bucket for transformation intermediate storage",
-      exportName: `${projectName}-transformation-bucket`,
-    });
+
 
     new cdk.CfnOutput(this, "KnowledgeBaseRoleArn", {
       value: knowledgeBaseRole.roleArn,
