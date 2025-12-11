@@ -41,6 +41,7 @@ phases:
           
           echo "Extracting outputs..."
           DATA_BUCKET=$(cat outputs.json | jq -r '.LOCstack.DataBucketName // empty')
+          TRANSFORMATION_BUCKET=$(cat outputs.json | jq -r '.LOCstack.TransformationBucketName // empty')
           KB_ROLE_ARN=$(cat outputs.json | jq -r '.LOCstack.KnowledgeBaseRoleArn // empty')
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
@@ -195,91 +196,39 @@ phases:
           else
             echo "Creating new Data Source with Custom Transformation for GraphRAG..."
             
-            # Build data source configuration with custom transformation
-            if [ -n "$TRANSFORMATION_LAMBDA_ARN" ]; then
-              # With custom transformation Lambda
-              DS_ID=$(aws bedrock-agent create-data-source \
-                --name "${PROJECT_NAME}-s3-datasource" \
-                --description "S3 data source for GraphRAG with custom transformation" \
-                --knowledge-base-id "$KB_ID" \
-                --data-source-configuration '{
-                  "type": "S3",
-                  "s3Configuration": {
-                    "bucketArn": "'"$BUCKET_ARN"'",
-                    "inclusionPrefixes": ["extracted/"]
+            # Create Data Source without custom transformation (simpler approach)
+            echo "Creating Data Source with automatic entity extraction..."
+            DS_ID=$(aws bedrock-agent create-data-source \
+              --name "${PROJECT_NAME}-s3-datasource" \
+              --description "S3 data source for GraphRAG with automatic processing" \
+              --knowledge-base-id "$KB_ID" \
+              --data-source-configuration '{
+                "type": "S3",
+                "s3Configuration": {
+                  "bucketArn": "'"$BUCKET_ARN"'",
+                  "inclusionPrefixes": ["extracted/"]
+                }
+              }' \
+              --vector-ingestion-configuration '{
+                "chunkingConfiguration": {
+                  "chunkingStrategy": "FIXED_SIZE",
+                  "fixedSizeChunkingConfiguration": {
+                    "maxTokens": 1000,
+                    "overlapPercentage": 20
                   }
-                }' \
-                --vector-ingestion-configuration '{
-                  "chunkingConfiguration": {
-                    "chunkingStrategy": "FIXED_SIZE",
-                    "fixedSizeChunkingConfiguration": {
-                      "maxTokens": 1000,
-                      "overlapPercentage": 20
-                    }
-                  },
-                  "customTransformationConfiguration": {
-                    "intermediateStorage": {
-                      "s3Location": {
-                        "uri": "s3://'"$DATA_BUCKET"'/transformation-temp/"
-                      }
-                    },
-                    "transformations": [
-                      {
-                        "stepToApply": "POST_CHUNKING",
-                        "transformationFunction": {
-                          "transformationLambdaConfiguration": {
-                            "lambdaArn": "'"$TRANSFORMATION_LAMBDA_ARN"'"
-                          }
-                        }
-                      }
-                    ]
-                  },
-                  "contextEnrichmentConfiguration": {
-                    "type": "BEDROCK_FOUNDATION_MODEL",
-                    "bedrockFoundationModelConfiguration": {
-                      "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
-                      "enrichmentStrategyConfiguration": {
-                        "method": "CHUNK_ENTITY_EXTRACTION"
-                      }
+                },
+                "contextEnrichmentConfiguration": {
+                  "type": "BEDROCK_FOUNDATION_MODEL",
+                  "bedrockFoundationModelConfiguration": {
+                    "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+                    "enrichmentStrategyConfiguration": {
+                      "method": "CHUNK_ENTITY_EXTRACTION"
                     }
                   }
-                }' \
-                --region "$CDK_DEFAULT_REGION" \
-                --query 'dataSource.dataSourceId' --output text)
-            else
-              # Without custom transformation (fallback)
-              DS_ID=$(aws bedrock-agent create-data-source \
-                --name "${PROJECT_NAME}-s3-datasource" \
-                --description "S3 data source for GraphRAG" \
-                --knowledge-base-id "$KB_ID" \
-                --data-source-configuration '{
-                  "type": "S3",
-                  "s3Configuration": {
-                    "bucketArn": "'"$BUCKET_ARN"'",
-                    "inclusionPrefixes": ["extracted/"]
-                  }
-                }' \
-                --vector-ingestion-configuration '{
-                  "chunkingConfiguration": {
-                    "chunkingStrategy": "FIXED_SIZE",
-                    "fixedSizeChunkingConfiguration": {
-                      "maxTokens": 1000,
-                      "overlapPercentage": 20
-                    }
-                  },
-                  "contextEnrichmentConfiguration": {
-                    "type": "BEDROCK_FOUNDATION_MODEL",
-                    "bedrockFoundationModelConfiguration": {
-                      "modelArn": "arn:aws:bedrock:'"$CDK_DEFAULT_REGION"'::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
-                      "enrichmentStrategyConfiguration": {
-                        "method": "CHUNK_ENTITY_EXTRACTION"
-                      }
-                    }
-                  }
-                }' \
-                --region "$CDK_DEFAULT_REGION" \
-                --query 'dataSource.dataSourceId' --output text)
-            fi
+                }
+              }' \
+              --region "$CDK_DEFAULT_REGION" \
+              --query 'dataSource.dataSourceId' --output text)
             
             if [ -z "$DS_ID" ] || [ "$DS_ID" = "None" ]; then
               echo "✗ Failed to create Data Source"

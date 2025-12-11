@@ -35,7 +35,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       props.bedrockModelId || "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
     // ========================================
-    // S3 Bucket for Data Storage
+    // S3 Buckets for Data Storage
     // ========================================
     const dataBucket = new s3.Bucket(this, "DataBucket", {
       bucketName:
@@ -47,13 +47,35 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       eventBridgeEnabled: true, // Enable EventBridge for S3 events
     });
 
-    // Grant Bedrock service access to S3 bucket
+    // Separate bucket for transformation intermediate storage
+    const transformationBucket = new s3.Bucket(this, "TransformationBucket", {
+      bucketName: `${projectName}-transformation-${this.account}-${this.region}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // Can be destroyed since it's just temp storage
+    });
+
+    // Grant Bedrock service access to both S3 buckets
     dataBucket.addToResourcePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         principals: [new iam.ServicePrincipal("bedrock.amazonaws.com")],
         actions: ["s3:GetObject", "s3:ListBucket"],
         resources: [dataBucket.bucketArn, `${dataBucket.bucketArn}/*`],
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+          },
+        },
+      })
+    );
+
+    transformationBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal("bedrock.amazonaws.com")],
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+        resources: [transformationBucket.bucketArn, `${transformationBucket.bucketArn}/*`],
         conditions: {
           StringEquals: {
             "aws:SourceAccount": this.account,
@@ -201,8 +223,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       description: "Role for Bedrock Knowledge Base to access S3 and Neptune",
     });
 
-    // Grant S3 read permissions
+    // Grant S3 permissions to Knowledge Base role
     dataBucket.grantRead(knowledgeBaseRole);
+    transformationBucket.grantReadWrite(knowledgeBaseRole);
 
     // Grant Neptune Analytics permissions
     knowledgeBaseRole.addToPolicy(
@@ -551,6 +574,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       value: dataBucket.bucketName,
       description: "S3 bucket for pipeline data",
       exportName: `${projectName}-data-bucket`,
+    });
+
+    new cdk.CfnOutput(this, "TransformationBucketName", {
+      value: transformationBucket.bucketName,
+      description: "S3 bucket for transformation intermediate storage",
+      exportName: `${projectName}-transformation-bucket`,
     });
 
     new cdk.CfnOutput(this, "KnowledgeBaseRoleArn", {
