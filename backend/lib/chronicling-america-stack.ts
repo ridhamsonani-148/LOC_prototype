@@ -233,6 +233,67 @@ export class ChroniclingAmericaStack extends cdk.Stack {
     const dataSourceId = "PLACEHOLDER_DS_ID";
 
     // ========================================
+    // CodeBuild Role for Neptune Analytics (for buildspec.yml)
+    // ========================================
+    const codeBuildRole = new iam.Role(this, "CodeBuildNeptuneRole", {
+      assumedBy: new iam.ServicePrincipal("codebuild.amazonaws.com"),
+      description: "Role for CodeBuild to create Neptune Analytics resources",
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName("AWSCodeBuildDeveloperAccess"),
+      ],
+    });
+
+    // Grant Neptune Analytics permissions to CodeBuild
+    codeBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "neptune-graph:CreateGraph",
+          "neptune-graph:DeleteGraph",
+          "neptune-graph:GetGraph",
+          "neptune-graph:ListGraphs",
+          "neptune-graph:UpdateGraph",
+          "neptune-graph:CreateGraphSnapshot",
+          "neptune-graph:DeleteGraphSnapshot",
+          "neptune-graph:ListGraphSnapshots",
+          "neptune-graph:RestoreGraphFromSnapshot",
+          "neptune-graph:TagResource",
+          "neptune-graph:UntagResource"
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant Bedrock Agent permissions for Knowledge Base creation
+    codeBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock:CreateKnowledgeBase",
+          "bedrock:DeleteKnowledgeBase",
+          "bedrock:GetKnowledgeBase",
+          "bedrock:ListKnowledgeBases",
+          "bedrock:UpdateKnowledgeBase",
+          "bedrock-agent:CreateDataSource",
+          "bedrock-agent:DeleteDataSource",
+          "bedrock-agent:GetDataSource",
+          "bedrock-agent:ListDataSources",
+          "bedrock-agent:UpdateDataSource"
+        ],
+        resources: ["*"],
+      })
+    );
+
+    // Grant IAM PassRole for Knowledge Base role
+    codeBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [knowledgeBaseRole.roleArn],
+      })
+    );
+
+    // ========================================
     // Lambda Execution Role
     // ========================================
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
@@ -539,6 +600,12 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       value: kbTransformationFunction.functionArn,
       description: "Transformation Lambda ARN for Knowledge Base GraphRAG",
       exportName: `${projectName}-kb-transformation-arn`,
+    });
+
+    new cdk.CfnOutput(this, "CodeBuildNeptuneRoleArn", {
+      value: codeBuildRole.roleArn,
+      description: "CodeBuild role ARN with Neptune Analytics permissions",
+      exportName: `${projectName}-codebuild-neptune-role`,
     });
   }
 }
