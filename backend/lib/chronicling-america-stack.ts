@@ -9,6 +9,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
+import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -606,6 +607,56 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       value: codeBuildRole.roleArn,
       description: "CodeBuild role ARN with Neptune Analytics permissions",
       exportName: `${projectName}-codebuild-neptune-role`,
+    });
+
+    // ========================================
+    // IAM Policy for Existing CodeBuild Role
+    // ========================================
+    // Create a managed policy that can be attached to your existing CodeBuild role
+    const neptuneBedrockPolicy = new iam.ManagedPolicy(this, "NeptuneBedrockPolicy", {
+      managedPolicyName: `${projectName}-neptune-bedrock-policy`,
+      description: "Policy for CodeBuild to create Neptune Analytics and Bedrock resources",
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "neptune-graph:CreateGraph",
+            "neptune-graph:DeleteGraph",
+            "neptune-graph:GetGraph",
+            "neptune-graph:ListGraphs",
+            "neptune-graph:UpdateGraph",
+            "neptune-graph:TagResource",
+            "neptune-graph:UntagResource"
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "bedrock:CreateKnowledgeBase",
+            "bedrock:DeleteKnowledgeBase",
+            "bedrock:GetKnowledgeBase",
+            "bedrock:ListKnowledgeBases",
+            "bedrock:UpdateKnowledgeBase",
+            "bedrock-agent:CreateDataSource",
+            "bedrock-agent:DeleteDataSource",
+            "bedrock-agent:GetDataSource",
+            "bedrock-agent:ListDataSources",
+            "bedrock-agent:UpdateDataSource"
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["iam:PassRole"],
+          resources: [knowledgeBaseRole.roleArn],
+        }),
+      ],
+    });
+
+    new cdk.CfnOutput(this, "NeptuneBedrockPolicyArn", {
+      value: neptuneBedrockPolicy.managedPolicyArn,
+      description: "Managed policy ARN to attach to your existing CodeBuild role",
     });
   }
 }
