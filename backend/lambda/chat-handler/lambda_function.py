@@ -205,11 +205,110 @@ Your responses should be:
     return prompts.get(persona, prompts['general'])
 
 
+def extract_bill_info(question: str) -> dict:
+    """
+    Extract bill information from user question for metadata filtering
+    
+    Examples:
+    - "what is bill HR 1 in congress 6?" -> {"congress": "6", "bill_type": "HR", "bill_number": "1"}
+    - "show me bill S 2 from congress 16" -> {"congress": "16", "bill_type": "S", "bill_number": "2"}
+    - "tell me about HR1 congress 6" -> {"congress": "6", "bill_type": "HR", "bill_number": "1"}
+    """
+    import re
+    
+    # Normalize question to lowercase for pattern matching
+    q = question.lower()
+    
+    bill_info = {}
+    
+    # Pattern 1: "bill HR 1 in congress 6" or "bill HR1 congress 6"
+    pattern1 = r'bill\s+([a-z]+)\s*(\d+).*congress\s+(\d+)'
+    match1 = re.search(pattern1, q)
+    if match1:
+        bill_info = {
+            "bill_type": match1.group(1).upper(),
+            "bill_number": match1.group(2),
+            "congress": match1.group(3)
+        }
+    
+    # Pattern 2: "HR 1 from congress 6" or "S2 congress 16"
+    pattern2 = r'([a-z]+)\s*(\d+).*congress\s+(\d+)'
+    match2 = re.search(pattern2, q)
+    if match2 and not match1:  # Only if pattern1 didn't match
+        bill_info = {
+            "bill_type": match2.group(1).upper(),
+            "bill_number": match2.group(2),
+            "congress": match2.group(3)
+        }
+    
+    # Pattern 3: "congress 6 bill HR 1"
+    pattern3 = r'congress\s+(\d+).*bill\s+([a-z]+)\s*(\d+)'
+    match3 = re.search(pattern3, q)
+    if match3 and not match1 and not match2:
+        bill_info = {
+            "congress": match3.group(1),
+            "bill_type": match3.group(2).upper(),
+            "bill_number": match3.group(3)
+        }
+    
+    print(f"Extracted bill info from '{question}': {bill_info}")
+    return bill_info
+
+
+def build_metadata_filter(bill_info: dict) -> dict:
+    """
+    Build metadata filter based on extracted bill information
+    
+    Returns filter that matches:
+    - congress_number = extracted congress
+    - bill_type = extracted bill type  
+    - bill_number = extracted bill number
+    """
+    if not bill_info:
+        return None
+    
+    filters = []
+    
+    # Add congress filter
+    if 'congress' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "congress",  # Match S3 metadata key
+                "value": bill_info['congress']
+            }
+        })
+    
+    # Add bill type filter
+    if 'bill_type' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "bill_type", 
+                "value": bill_info['bill_type']
+            }
+        })
+    
+    # Add bill number filter
+    if 'bill_number' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "bill_number",
+                "value": bill_info['bill_number']
+            }
+        })
+    
+    # Combine all filters with AND logic
+    if len(filters) == 1:
+        return filters[0]
+    elif len(filters) > 1:
+        return {"andAll": filters}
+    
+    return None
+
+
 def query_knowledge_base(question: str, persona: str = 'general') -> dict:
     """
-    Query Bedrock Knowledge Base with GraphRAG and Reranking
-    Neptune Analytics graph provides automatic entity extraction and relationships
-    Uses Amazon Rerank model for improved relevance
+    Query Bedrock Knowledge Base with dynamic metadata filtering
+    Automatically detects bill references and filters to specific bills
     """
     print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
     
@@ -219,6 +318,10 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
     # Get account ID from Lambda context (available via STS)
     sts_client = boto3.client('sts')
     account_id = sts_client.get_caller_identity()['Account']
+    
+    # Extract bill information for metadata filtering
+    bill_info = extract_bill_info(question)
+    metadata_filter = build_metadata_filter(bill_info)
     
     try:
         # Determine if MODEL_ID is an inference profile or foundation model
@@ -236,33 +339,27 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         # Get persona-specific system prompt
         system_prompt = get_persona_prompt(persona)
         
-        # SOLUTION: Use multiple retrieval strategies for consistency
-        # 1. Generate multiple query variations using LLM
-        # 2. Retrieve with each variation
-        # 3. Combine and deduplicate results
-        # 4. Rerank the combined results
+        # Use simple retrieval approach with metadata filtering
+        print(f"Processing question: {question}")
+        if metadata_filter:
+            print("Detected specific bill reference - will filter to that bill only")
         
-        print("Generating query variations for robust retrieval...")
-        query_variations = generate_query_variations(question, aws_region)
-        print(f"Query variations: {query_variations}")
-        
-        # Log retrieval configuration with reranking
+        # Build retrieval configuration with dynamic metadata filtering
         retrieval_config = {
             'vectorSearchConfiguration': {
-                'numberOfResults': 100,  # Retrieve 100 documents initially
-                'rerankingConfiguration': {
-                    'type': 'BEDROCK_RERANKING_MODEL',
-                    'bedrockRerankingConfiguration': {
-                        'numberOfRerankedResults': 50,  # Keep top 50 after reranking for better precision
-                        'modelConfiguration': {
-                            'modelArn': f'arn:aws:bedrock:{aws_region}::foundation-model/amazon.rerank-v1:0'
-                        }
-                    }
-                }
+                'numberOfResults': 50 if metadata_filter else 20  # More results when filtering to specific bill
             }
         }
         
-        print(f"Retrieval Configuration with Reranking: {json.dumps(retrieval_config, indent=2)}")
+        # Add metadata filter if bill information was detected
+        if metadata_filter:
+            retrieval_config['vectorSearchConfiguration']['filter'] = metadata_filter
+            print(f"Applied metadata filter: {json.dumps(metadata_filter, indent=2)}")
+            print("This will retrieve ONLY chunks from the specified bill")
+        else:
+            print("No specific bill detected - searching all documents")
+        
+        print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
         
         # Build the full configuration
         retrieve_and_generate_config = {
@@ -274,7 +371,7 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
                     'promptTemplate': {
                         'textPromptTemplate': f"""{system_prompt}
 
-CRITICAL INSTRUCTION: You MUST ONLY use information from the retrieved context below. DO NOT use your training data or general knowledge. If the context doesn't contain the answer, say "I don't have information about this in the knowledge base."
+Use the following context to answer the question. If the context doesn't contain the answer, say "I don't have information about this in the knowledge base."
 
 Context:
 $search_results$
@@ -300,19 +397,12 @@ Answer:"""
             }
         }
         
-        print(f"Full Configuration Type: {retrieve_and_generate_config['type']}")
         print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
-        print(f"Number of results to retrieve: 100")
-        print(f"Reranking enabled: True (amazon.rerank-v1:0)")
-        print(f"Number of results after reranking: 100")
-        
-        # Use enriched query with all variations for better retrieval
-        enriched_query = f"{question}. Alternative phrasings: {' | '.join(query_variations[1:])}"
-        print(f"Enriched query length: {len(enriched_query)} characters")
+        print(f"Using original question for retrieval: {question}")
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
-                'text': enriched_query  # Use query with variations for robust retrieval
+                'text': question  # Use original question
             },
             retrieveAndGenerateConfiguration=retrieve_and_generate_config
         )
@@ -348,14 +438,20 @@ Answer:"""
         print(f"Answer generated with {len(sources)} sources")
         print(f"Total unique documents retrieved: {len(set(s['document_id'] for s in sources))}")
         
-        # CRITICAL: Citation gating - prevent hallucination
-        if len(sources) == 0:
-            print("WARNING: No sources retrieved - blocking hallucinated response")
+        # UPDATED: Check if we have citations (not just sources)
+        # Sometimes citations exist but retrievedReferences is empty
+        has_citations = 'citations' in response and len(response['citations']) > 0
+        
+        if not has_citations:
+            print("WARNING: No citations found - this might be a hallucinated response")
             return {
                 'answer': "I couldn't find any relevant information in the knowledge base to answer your question. Please try rephrasing your query or ask about a different topic.",
                 'sources': [],
                 'entities': []
             }
+        else:
+            print(f"Found {len(response['citations'])} citations - proceeding with answer")
+            # Even if sources is empty, we have citations, so the answer is valid
         
         return {
             'answer': answer,
