@@ -284,55 +284,6 @@ def build_enhanced_query(question: str, bill_info: dict) -> str:
     return question
 
 
-def build_metadata_filter(bill_info: dict) -> dict:
-    """
-    Build metadata filter based on extracted bill information
-    
-    Returns filter that matches:
-    - congress_number = extracted congress
-    - bill_type = extracted bill type  
-    - bill_number = extracted bill number
-    """
-    if not bill_info:
-        return None
-    
-    filters = []
-    
-    # Add congress filter (with x-amz-meta- prefix)
-    if 'congress' in bill_info:
-        filters.append({
-            "equals": {
-                "key": "x-amz-meta-congress",  # Match actual S3 metadata key
-                "value": bill_info['congress']
-            }
-        })
-    
-    # Add bill type filter (with x-amz-meta- prefix)
-    if 'bill_type' in bill_info:
-        filters.append({
-            "equals": {
-                "key": "x-amz-meta-bill_type", 
-                "value": bill_info['bill_type']
-            }
-        })
-    
-    # Add bill number filter (with x-amz-meta- prefix)
-    if 'bill_number' in bill_info:
-        filters.append({
-            "equals": {
-                "key": "x-amz-meta-bill_number",
-                "value": bill_info['bill_number']
-            }
-        })
-    
-    # Combine all filters with AND logic
-    if len(filters) == 1:
-        return filters[0]
-    elif len(filters) > 1:
-        return {"andAll": filters}
-    
-    return None
-
 
 def query_knowledge_base(question: str, persona: str = 'general') -> dict:
     """
@@ -368,10 +319,10 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         # Get persona-specific system prompt
         system_prompt = get_persona_prompt(persona)
         
-        # Use simple retrieval approach with metadata filtering
+        # Use simple retrieval approach with content-based targeting
         print(f"Processing question: {question}")
-        if metadata_filter:
-            print("Detected specific bill reference - will filter to that bill only")
+        if bill_info:
+            print("Detected specific bill reference - will use enhanced query targeting")
         
         # Build retrieval configuration for content-based targeting
         retrieval_config = {
