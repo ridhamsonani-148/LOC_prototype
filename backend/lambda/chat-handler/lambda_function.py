@@ -73,8 +73,8 @@ def lambda_handler(event, context):
                 })
             }
         
-        # Query Knowledge Base with GraphRAG
-        response = query_knowledge_base(question, persona)
+        # Query Knowledge Base with Q Business-style hybrid approach
+        response = query_knowledge_base_hybrid(question, persona)
         
         return {
             'statusCode': 200,
@@ -285,23 +285,277 @@ def build_enhanced_query(question: str, bill_info: dict) -> str:
 
 
 
-def query_knowledge_base(question: str, persona: str = 'general') -> dict:
+def query_knowledge_base_hybrid(question: str, persona: str = 'general') -> dict:
     """
-    Query Bedrock Knowledge Base with dynamic metadata filtering
-    Automatically detects bill references and filters to specific bills
+    Q Business-style hybrid approach with multi-stage retrieval:
+    1. Direct S3 lookup for specific bills (if detected)
+    2. Knowledge Base semantic search as fallback
+    3. Combine and rank results
     """
-    print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
+    print(f"Using Q Business-style hybrid approach")
     
-    # Get AWS context from Lambda environment
+    # Get AWS context
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
-    
-    # Get account ID from Lambda context (available via STS)
     sts_client = boto3.client('sts')
     account_id = sts_client.get_caller_identity()['Account']
     
-    # Extract bill information for enhanced query targeting
+    # Extract bill information
     bill_info = extract_bill_info(question)
+    
+    # Stage 1: Direct S3 lookup for specific bills
+    if bill_info and all(k in bill_info for k in ['congress', 'bill_type', 'bill_number']):
+        print(f"Stage 1: Attempting direct S3 lookup for specific bill: {bill_info}")
+        direct_result = get_bill_from_s3_direct(bill_info)
+        if direct_result:
+            print("✓ Found bill via direct S3 lookup")
+            return generate_response_from_content(direct_result, question, persona)
+    
+    # Stage 2: Knowledge Base semantic search (fallback)
+    print("Stage 2: Using Knowledge Base semantic search")
+    return query_knowledge_base_semantic(question, persona, bill_info)
+
+
+def get_bill_from_s3_direct(bill_info: dict) -> str:
+    """
+    Direct S3 lookup for specific bills - guaranteed to work if file exists
+    """
+    try:
+        import boto3
+        s3_client = boto3.client('s3')
+        
+        # Construct S3 key based on our file naming convention
+        congress = bill_info['congress']
+        bill_type = bill_info['bill_type'].lower()
+        bill_number = bill_info['bill_number']
+        
+        # Try the exact key format we use
+        key = f"extracted/congress_{congress}/{bill_type}_{bill_number}.txt"
+        bucket_name = os.environ.get('DATA_BUCKET_NAME', 'congress-bills-data-541064517181-us-east-1')
+        
+        print(f"Attempting S3 lookup: s3://{bucket_name}/{key}")
+        
+        response = s3_client.get_object(Bucket=bucket_name, Key=key)
+        content = response['Body'].read().decode('utf-8')
+        
+        print(f"✓ Successfully retrieved bill from S3 ({len(content)} characters)")
+        return content
+        
+    except Exception as e:
+        print(f"S3 direct lookup failed: {str(e)}")
+        return None
+
+
+def generate_response_from_content(content: str, question: str, persona: str) -> dict:
+    """
+    Generate response directly from bill content using Bedrock model
+    """
+    try:
+        import boto3
+        bedrock_runtime = boto3.client('bedrock-runtime')
+        
+        # Get persona-specific system prompt
+        system_prompt = get_persona_prompt(persona)
+        
+        # Build prompt with full bill content
+        prompt = f"""{system_prompt}
+
+Based on the following bill content, please answer the user's question:
+
+BILL CONTENT:
+{content}
+
+USER QUESTION: {question}
+
+Please provide a comprehensive answer based solely on the bill content above."""
+
+        # Use Bedrock model directly
+        model_id = os.environ.get('MODEL_ID', 'anthropic.claude-3-5-sonnet-20241022-v2:0')
+        
+        response = bedrock_runtime.invoke_model(
+            modelId=model_id,
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 2000,
+                "temperature": 0.0,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt
+                }]
+            })
+        )
+        
+        response_body = json.loads(response['body'].read())
+        answer = response_body['content'][0]['text']
+        
+        return {
+            'answer': answer,
+            'sources': [{'document_id': 'Direct S3 lookup', 'content': content[:200] + '...', 'score': 1.0}],
+            'entities': []
+        }
+        
+    except Exception as e:
+        print(f"Direct response generation failed: {str(e)}")
+        return {
+            'answer': "I found the bill content but couldn't generate a response. Please try again.",
+            'sources': [],
+            'entities': []
+        }
+
+
+def query_knowledge_base_semantic(question: str, persona: str, bill_info: dict) -> dict:
+    """
+    Traditional Knowledge Base semantic search (fallback method)
+    """
+    print(f"Querying Knowledge Base: {KNOWLEDGE_BASE_ID}")
+    
+    # Get AWS context
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    sts_client = boto3.client('sts')
+    account_id = sts_client.get_caller_identity()['Account']
+    
+    # Build enhanced query
     enhanced_query = build_enhanced_query(question, bill_info)
+    
+    try:
+        # Determine model ARN
+        if BEDROCK_MODEL_ID.startswith(('us.', 'eu.', 'global.')):
+            model_arn = f'arn:aws:bedrock:{aws_region}:{account_id}:inference-profile/{BEDROCK_MODEL_ID}'
+        else:
+            model_arn = f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}'
+        
+        print(f"Using model ARN: {model_arn}")
+        print(f"Using persona: {persona}")
+        
+        # Get persona-specific system prompt
+        system_prompt = get_persona_prompt(persona)
+        
+        # Use simple retrieval approach with content-based targeting
+        print(f"Processing question: {question}")
+        if bill_info:
+            print("Detected specific bill reference - will use enhanced query targeting")
+        
+        # Log the enhanced query approach
+        if bill_info:
+            print(f"Detected specific bill: {bill_info}")
+            print(f"Enhanced query: {enhanced_query}")
+            print("Using content-based targeting instead of metadata filtering")
+        else:
+            print("No specific bill detected - using original query")
+        
+        # Build retrieval configuration for content-based targeting
+        retrieval_config = {
+            'vectorSearchConfiguration': {
+                'numberOfResults': 100  # Increased to 100 for better retrieval
+            }
+        }
+        
+        print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
+        
+        # Build the full configuration
+        retrieve_and_generate_config = {
+            'type': 'KNOWLEDGE_BASE',
+            'knowledgeBaseConfiguration': {
+                'knowledgeBaseId': KNOWLEDGE_BASE_ID,
+                'modelArn': model_arn,
+                'generationConfiguration': {
+                    'promptTemplate': {
+                        'textPromptTemplate': f"""{system_prompt}
+
+Use the following context to answer the question. If the context doesn't contain the answer, say "I don't have information about this in the knowledge base."
+
+Context:
+$search_results$
+
+Question: $query$
+
+Answer:"""
+                    },
+                    'inferenceConfig': {
+                        'textInferenceConfig': {
+                            'temperature': 0.0,
+                            'maxTokens': 2000
+                        }
+                    }
+                },
+                'retrievalConfiguration': retrieval_config
+            }
+        }
+        
+        print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
+        print(f"Using enhanced query for retrieval: {enhanced_query}")
+        
+        response = bedrock_agent_runtime.retrieve_and_generate(
+            input={
+                'text': enhanced_query  # Use enhanced query with bill identifiers
+            },
+            retrieveAndGenerateConfiguration=retrieve_and_generate_config
+        )
+        
+        # Extract answer and sources
+        answer = response['output']['text']
+        
+        # Log response structure
+        print(f"Response keys: {list(response.keys())}")
+        
+        # Extract sources (documents that were retrieved)
+        sources = []
+        if 'citations' in response:
+            print(f"Number of citations: {len(response['citations'])}")
+            for citation in response['citations']:
+                retrieved_refs = citation.get('retrievedReferences', [])
+                print(f"Citation has {len(retrieved_refs)} retrieved references")
+                for reference in retrieved_refs:
+                    sources.append({
+                        'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
+                        'content': reference.get('content', {}).get('text', '')[:200] + '...',
+                        'score': reference.get('score', 0)
+                    })
+        else:
+            print("No citations in response")
+        
+        # Extract entities (if available in response metadata)
+        entities = []
+        if 'metadata' in response:
+            entities = response['metadata'].get('entities', [])
+            print(f"Found {len(entities)} entities in metadata")
+        
+        print(f"Answer generated with {len(sources)} sources")
+        print(f"Total unique documents retrieved: {len(set(s['document_id'] for s in sources))}")
+        
+        # UPDATED: Check if we have citations (not just sources)
+        # Sometimes citations exist but retrievedReferences is empty
+        has_citations = 'citations' in response and len(response['citations']) > 0
+        
+        if not has_citations:
+            print("WARNING: No citations found - this might be a hallucinated response")
+            return {
+                'answer': "I couldn't find any relevant information in the knowledge base to answer your question. Please try rephrasing your query or ask about a different topic.",
+                'sources': [],
+                'entities': []
+            }
+        else:
+            print(f"Found {len(response['citations'])} citations - proceeding with answer")
+            # Even if sources is empty, we have citations, so the answer is valid
+        
+        return {
+            'answer': answer,
+            'sources': sources,
+            'entities': entities
+        }
+        
+    except Exception as e:
+        # Log detailed error for debugging
+        print(f"ERROR querying Knowledge Base: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        
+        # Return user-friendly message (don't expose internal errors)
+        return {
+            'answer': "I'm sorry, I couldn't process your question at this time. Please try again in a moment. If the problem persists, try rephrasing your question.",
+            'sources': [],
+            'entities': [],
+            'error': True  # Flag for frontend to handle differently
+        }
     
     try:
         # Determine if MODEL_ID is an inference profile or foundation model
