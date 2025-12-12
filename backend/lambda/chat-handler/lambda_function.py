@@ -255,6 +255,35 @@ def extract_bill_info(question: str) -> dict:
     return bill_info
 
 
+def build_enhanced_query(question: str, bill_info: dict) -> str:
+    """
+    Build enhanced query that includes specific bill identifiers in the search text
+    Since Knowledge Base doesn't index S3 metadata as filterable fields,
+    we enhance the query to target specific bill content
+    """
+    if not bill_info:
+        return question
+    
+    # Build specific search terms based on bill info
+    search_terms = []
+    
+    if 'congress' in bill_info:
+        search_terms.append(f"Congress: {bill_info['congress']}")
+    
+    if 'bill_type' in bill_info:
+        search_terms.append(f"Bill Type: {bill_info['bill_type']}")
+    
+    if 'bill_number' in bill_info:
+        search_terms.append(f"Bill Number: {bill_info['bill_number']}")
+    
+    if search_terms:
+        # Combine original question with specific search terms
+        enhanced_query = f"{question} {' '.join(search_terms)}"
+        return enhanced_query
+    
+    return question
+
+
 def build_metadata_filter(bill_info: dict) -> dict:
     """
     Build metadata filter based on extracted bill information
@@ -319,9 +348,9 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
     sts_client = boto3.client('sts')
     account_id = sts_client.get_caller_identity()['Account']
     
-    # Extract bill information for metadata filtering
+    # Extract bill information for enhanced query targeting
     bill_info = extract_bill_info(question)
-    metadata_filter = build_metadata_filter(bill_info)
+    enhanced_query = build_enhanced_query(question, bill_info)
     
     try:
         # Determine if MODEL_ID is an inference profile or foundation model
@@ -344,20 +373,20 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         if metadata_filter:
             print("Detected specific bill reference - will filter to that bill only")
         
-        # Build retrieval configuration with dynamic metadata filtering
+        # Build retrieval configuration for content-based targeting
         retrieval_config = {
             'vectorSearchConfiguration': {
                 'numberOfResults': 100  # Increased to 100 for better retrieval
             }
         }
         
-        # Add metadata filter if bill information was detected
-        if metadata_filter:
-            retrieval_config['vectorSearchConfiguration']['filter'] = metadata_filter
-            print(f"Applied metadata filter: {json.dumps(metadata_filter, indent=2)}")
-            print("This will retrieve ONLY chunks from the specified bill")
+        # Log the enhanced query approach
+        if bill_info:
+            print(f"Detected specific bill: {bill_info}")
+            print(f"Enhanced query: {enhanced_query}")
+            print("Using content-based targeting instead of metadata filtering")
         else:
-            print("No specific bill detected - searching all documents")
+            print("No specific bill detected - using original query")
         
         print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
         
@@ -402,7 +431,7 @@ Answer:"""
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
-                'text': question  # Use original question
+                'text': enhanced_query  # Use enhanced query with bill identifiers
             },
             retrieveAndGenerateConfiguration=retrieve_and_generate_config
         )
