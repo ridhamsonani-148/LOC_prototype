@@ -269,29 +269,29 @@ def build_metadata_filter(bill_info: dict) -> dict:
     
     filters = []
     
-    # Add congress filter
+    # Add congress filter (with x-amz-meta- prefix)
     if 'congress' in bill_info:
         filters.append({
             "equals": {
-                "key": "congress",  # Match S3 metadata key
+                "key": "x-amz-meta-congress",  # Match actual S3 metadata key
                 "value": bill_info['congress']
             }
         })
     
-    # Add bill type filter
+    # Add bill type filter (with x-amz-meta- prefix)
     if 'bill_type' in bill_info:
         filters.append({
             "equals": {
-                "key": "bill_type", 
+                "key": "x-amz-meta-bill_type", 
                 "value": bill_info['bill_type']
             }
         })
     
-    # Add bill number filter
+    # Add bill number filter (with x-amz-meta- prefix)
     if 'bill_number' in bill_info:
         filters.append({
             "equals": {
-                "key": "bill_number",
+                "key": "x-amz-meta-bill_number",
                 "value": bill_info['bill_number']
             }
         })
