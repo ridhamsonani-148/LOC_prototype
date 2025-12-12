@@ -347,7 +347,7 @@ def query_knowledge_base(question: str, persona: str = 'general') -> dict:
         # Build retrieval configuration with dynamic metadata filtering
         retrieval_config = {
             'vectorSearchConfiguration': {
-                'numberOfResults': 50 if metadata_filter else 20  # More results when filtering to specific bill
+                'numberOfResults': 100  # Increased to 100 for better retrieval
             }
         }
         

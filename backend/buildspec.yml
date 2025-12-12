@@ -206,15 +206,16 @@ phases:
                 "type": "S3",
                 "s3Configuration": {
                   "bucketArn": "'"$BUCKET_ARN"'",
-                  "inclusionPrefixes": ["extracted/"]
+                  "inclusionPrefixes": ["extracted/"],
+                  "inclusionPatterns": ["**/*.txt"]
                 }
               }' \
               --vector-ingestion-configuration '{
                 "chunkingConfiguration": {
                   "chunkingStrategy": "FIXED_SIZE",
                   "fixedSizeChunkingConfiguration": {
-                    "maxTokens": 1000,
-                    "overlapPercentage": 20
+                    "maxTokens": 2000,
+                    "overlapPercentage": 10
                   }
                 },
                 "contextEnrichmentConfiguration": {

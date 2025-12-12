@@ -368,27 +368,24 @@ class DataCollector:
             return None
     
     def save_bill_to_s3(self, congress_num, bill_type, bill_number, text_content, metadata):
-        """Save extracted bill text to S3 with structured metadata for GraphRAG"""
+        """Save extracted bill text to S3 as TXT file with metadata"""
         try:
-            # Create structured JSON document for GraphRAG
-            # This structure helps Knowledge Base create proper graph hierarchy
-            structured_doc = {
-                "entity_type": "bill",
-                "congress_number": congress_num,
-                "parent_congress_id": f"congress_{congress_num}",
-                "bill_id": f"congress_{congress_num}_{bill_type}_{bill_number}",
-                "bill_type": bill_type.upper(),
-                "bill_number": bill_number,
-                "title": metadata.get('title', 'N/A'),
-                "introduced_date": metadata.get('introducedDate', 'N/A'),
-                "latest_action": metadata.get('latestAction', {}).get('text', 'N/A'),
-                "latest_action_date": metadata.get('latestAction', {}).get('actionDate', 'N/A'),
-                "bill_text": text_content
-            }
+            # Create structured text document with metadata header
+            header = f"""BILL METADATA:
+Congress: {congress_num}
+Bill Type: {bill_type.upper()}
+Bill Number: {bill_number}
+Bill ID: congress_{congress_num}_{bill_type}_{bill_number}
+Title: {metadata.get('title', 'N/A')}
+Introduced Date: {metadata.get('introducedDate', 'N/A')}
+Latest Action: {metadata.get('latestAction', {}).get('text', 'N/A')}
+Latest Action Date: {metadata.get('latestAction', {}).get('actionDate', 'N/A')}
+
+BILL TEXT:
+{text_content}
+"""
             
-            # Convert to JSON string
-            json_content = json.dumps(structured_doc, indent=2)
-            content_bytes = json_content.encode('utf-8')
+            content_bytes = header.encode('utf-8')
             size_mb = len(content_bytes) / (1024 * 1024)
             
             # Check file size (KB has 50MB limit)
@@ -396,13 +393,13 @@ class DataCollector:
                 self.log(f"  ✗ File too large: {size_mb:.2f}MB (KB limit is 50MB)")
                 return False
             
-            # Save to S3 with rich metadata for GraphRAG
-            key = f"extracted/congress_{congress_num}/{bill_type}_{bill_number}.json"
+            # Save to S3 as TXT file with rich metadata
+            key = f"extracted/congress_{congress_num}/{bill_type}_{bill_number}.txt"
             s3.put_object(
                 Bucket=BUCKET_NAME,
                 Key=key,
                 Body=content_bytes,
-                ContentType='application/json',
+                ContentType='text/plain',
                 Metadata={
                     # S3 metadata for filtering and organization
                     'source': 'congress.gov',
