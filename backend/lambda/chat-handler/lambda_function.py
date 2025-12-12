@@ -378,7 +378,7 @@ Answer:"""
         }
         
         print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
-        print(f"Using original question for retrieval: {question}")
+        print(f"Using enhanced query for retrieval: {enhanced_query}")
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
