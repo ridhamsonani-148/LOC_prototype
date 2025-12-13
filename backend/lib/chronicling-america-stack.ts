@@ -366,6 +366,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
+    // Grant S3 read permissions to Lambda for direct bill lookup
+    dataBucket.grantRead(lambdaRole);
+
     // ========================================
     // Lambda Functions (Only 3 needed!)
     // ========================================
@@ -512,6 +515,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
         environment: {
           KNOWLEDGE_BASE_ID: knowledgeBaseId, // Will be updated by CLI
           MODEL_ID: bedrockModelId,
+          DATA_BUCKET_NAME: dataBucket.bucketName, // For direct S3 access
         },
         logGroup: chatHandlerLogGroup,
       }

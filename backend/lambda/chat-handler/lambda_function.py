@@ -330,7 +330,12 @@ def get_bill_from_s3_direct(bill_info: dict) -> str:
         
         # Try the exact key format we use
         key = f"extracted/congress_{congress}/{bill_type}_{bill_number}.txt"
-        bucket_name = os.environ.get('DATA_BUCKET_NAME', 'congress-bills-data-541064517181-us-east-1')
+        
+        # Get bucket name from environment (set by CDK)
+        bucket_name = os.environ.get('DATA_BUCKET_NAME') or os.environ.get('BUCKET_NAME')
+        if not bucket_name:
+            # Fallback to the actual bucket name from the error
+            bucket_name = 'congress-bills-data-541064517181-us-east-1'
         
         print(f"Attempting S3 lookup: s3://{bucket_name}/{key}")
         
