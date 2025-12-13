@@ -255,6 +255,52 @@ def extract_bill_info(question: str) -> dict:
     return bill_info
 
 
+def build_metadata_filter(bill_info: dict) -> dict:
+    """
+    Build metadata filter for Knowledge Base using mapped S3 metadata attributes
+    Now that we have proper metadata mapping, these filters will work
+    """
+    if not bill_info:
+        return None
+    
+    filters = []
+    
+    # Add congress filter (now mapped to KB metadata)
+    if 'congress' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "congress",
+                "value": bill_info['congress']
+            }
+        })
+    
+    # Add bill type filter
+    if 'bill_type' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "bill_type", 
+                "value": bill_info['bill_type']
+            }
+        })
+    
+    # Add bill number filter
+    if 'bill_number' in bill_info:
+        filters.append({
+            "equals": {
+                "key": "bill_number",
+                "value": bill_info['bill_number']
+            }
+        })
+    
+    # Combine all filters with AND logic
+    if len(filters) == 1:
+        return filters[0]
+    elif len(filters) > 1:
+        return {"andAll": filters}
+    
+    return None
+
+
 def build_enhanced_query(question: str, bill_info: dict) -> str:
     """
     Build enhanced query that includes specific bill identifiers in the search text
@@ -287,32 +333,39 @@ def build_enhanced_query(question: str, bill_info: dict) -> str:
 
 def query_knowledge_base_hybrid(question: str, persona: str = 'general') -> dict:
     """
-    Q Business-style hybrid approach with multi-stage retrieval:
-    1. Direct S3 lookup for specific bills (if detected)
-    2. Knowledge Base semantic search as fallback
-    3. Combine and rank results
+    KB-first approach with S3 fallback:
+    1. Knowledge Base with metadata filtering (primary)
+    2. Direct S3 lookup as fallback (if KB fails)
     """
-    print(f"Using Q Business-style hybrid approach")
-    
-    # Get AWS context
-    aws_region = os.environ.get("AWS_REGION", "us-east-1")
-    sts_client = boto3.client('sts')
-    account_id = sts_client.get_caller_identity()['Account']
+    print(f"Using KB-first approach with metadata filtering")
     
     # Extract bill information
     bill_info = extract_bill_info(question)
     
-    # Stage 1: Direct S3 lookup for specific bills
+    # Stage 1: Knowledge Base with metadata filtering (PRIMARY)
+    print("Stage 1: Using Knowledge Base with metadata filtering")
+    kb_result = query_knowledge_base_with_metadata(question, persona, bill_info)
+    
+    # Check if KB returned good results
+    if kb_result and kb_result.get('sources') and len(kb_result['sources']) > 0:
+        print("✓ Knowledge Base returned results with sources")
+        return kb_result
+    
+    # Stage 2: Direct S3 lookup (FALLBACK)
     if bill_info and all(k in bill_info for k in ['congress', 'bill_type', 'bill_number']):
-        print(f"Stage 1: Attempting direct S3 lookup for specific bill: {bill_info}")
+        print("Stage 2: KB failed, attempting direct S3 fallback for specific bill")
         direct_result = get_bill_from_s3_direct(bill_info)
         if direct_result:
-            print("✓ Found bill via direct S3 lookup")
+            print("✓ Found bill via S3 fallback")
             return generate_response_from_content(direct_result, question, persona)
     
-    # Stage 2: Knowledge Base semantic search (fallback)
-    print("Stage 2: Using Knowledge Base semantic search")
-    return query_knowledge_base_semantic(question, persona, bill_info)
+    # Stage 3: Return KB result even if no sources (let user know)
+    print("Stage 3: Returning KB result (no S3 fallback available)")
+    return kb_result or {
+        'answer': "I couldn't find specific information to answer your question. Please try rephrasing or ask about a different topic.",
+        'sources': [],
+        'entities': []
+    }
 
 
 def get_bill_from_s3_direct(bill_info: dict) -> str:
@@ -404,6 +457,135 @@ Please provide a comprehensive answer based solely on the bill content above."""
             'answer': "I found the bill content but couldn't generate a response. Please try again.",
             'sources': [],
             'entities': []
+        }
+
+
+def query_knowledge_base_with_metadata(question: str, persona: str, bill_info: dict) -> dict:
+    """
+    Query Knowledge Base with proper metadata filtering (primary method)
+    """
+    print(f"Querying Knowledge Base with metadata filtering: {KNOWLEDGE_BASE_ID}")
+    
+    # Get AWS context
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    sts_client = boto3.client('sts')
+    account_id = sts_client.get_caller_identity()['Account']
+    
+    # Build metadata filter and enhanced query
+    metadata_filter = build_metadata_filter(bill_info)
+    enhanced_query = build_enhanced_query(question, bill_info)
+    
+    try:
+        # Determine model ARN
+        if BEDROCK_MODEL_ID.startswith(('us.', 'eu.', 'global.')):
+            model_arn = f'arn:aws:bedrock:{aws_region}:{account_id}:inference-profile/{BEDROCK_MODEL_ID}'
+        else:
+            model_arn = f'arn:aws:bedrock:{aws_region}::foundation-model/{BEDROCK_MODEL_ID}'
+        
+        print(f"Using model ARN: {model_arn}")
+        print(f"Using persona: {persona}")
+        
+        # Get persona-specific system prompt
+        system_prompt = get_persona_prompt(persona)
+        
+        # Build retrieval configuration with metadata filtering
+        retrieval_config = {
+            'vectorSearchConfiguration': {
+                'numberOfResults': 100,  # High number to get all chunks from the bill
+                'overrideSearchType': 'HYBRID'  # Hybrid search for better accuracy
+            }
+        }
+        
+        # Add metadata filter if bill information was detected
+        if metadata_filter:
+            retrieval_config['vectorSearchConfiguration']['filter'] = metadata_filter
+            print(f"Applied metadata filter: {json.dumps(metadata_filter, indent=2)}")
+            print("This will retrieve ONLY chunks from the specified bill")
+        else:
+            print("No specific bill detected - searching all documents")
+        
+        print(f"Retrieval Configuration: {json.dumps(retrieval_config, indent=2)}")
+        
+        # Build the full configuration
+        retrieve_and_generate_config = {
+            'type': 'KNOWLEDGE_BASE',
+            'knowledgeBaseConfiguration': {
+                'knowledgeBaseId': KNOWLEDGE_BASE_ID,
+                'modelArn': model_arn,
+                'generationConfiguration': {
+                    'promptTemplate': {
+                        'textPromptTemplate': f"""{system_prompt}
+
+Use the following context to answer the question. Provide a well-formatted response with proper headings and structure.
+
+Context:
+$search_results$
+
+Question: $query$
+
+Answer:"""
+                    },
+                    'inferenceConfig': {
+                        'textInferenceConfig': {
+                            'temperature': 0.1,
+                            'maxTokens': 2000
+                        }
+                    }
+                },
+                'retrievalConfiguration': retrieval_config
+            }
+        }
+        
+        print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
+        print(f"Using enhanced query: {enhanced_query}")
+        
+        response = bedrock_agent_runtime.retrieve_and_generate(
+            input={
+                'text': enhanced_query
+            },
+            retrieveAndGenerateConfiguration=retrieve_and_generate_config
+        )
+        
+        # Extract answer and sources
+        answer = response['output']['text']
+        
+        # Extract sources (documents that were retrieved)
+        sources = []
+        if 'citations' in response:
+            print(f"Number of citations: {len(response['citations'])}")
+            for citation in response['citations']:
+                retrieved_refs = citation.get('retrievedReferences', [])
+                print(f"Citation has {len(retrieved_refs)} retrieved references")
+                for reference in retrieved_refs:
+                    sources.append({
+                        'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
+                        'content': reference.get('content', {}).get('text', '')[:200] + '...',
+                        'score': reference.get('score', 0)
+                    })
+        
+        # Extract entities
+        entities = []
+        if 'metadata' in response:
+            entities = response['metadata'].get('entities', [])
+        
+        print(f"KB returned {len(sources)} sources from {len(set(s['document_id'] for s in sources))} unique documents")
+        
+        return {
+            'answer': answer,
+            'sources': sources,
+            'entities': entities
+        }
+        
+    except Exception as e:
+        print(f"ERROR querying Knowledge Base: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        
+        return {
+            'answer': "I encountered an error while searching the knowledge base. Please try again.",
+            'sources': [],
+            'entities': [],
+            'error': True
         }
 
 

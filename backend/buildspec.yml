@@ -196,11 +196,11 @@ phases:
           else
             echo "Creating new Data Source with Custom Transformation for GraphRAG..."
             
-            # Create Data Source without custom transformation (simpler approach)
-            echo "Creating Data Source with automatic entity extraction..."
+            # Create Data Source with S3 metadata mapping for precise filtering
+            echo "Creating Data Source with S3 metadata mapping..."
             DS_ID=$(aws bedrock-agent create-data-source \
               --name "${PROJECT_NAME}-s3-datasource" \
-              --description "S3 data source for GraphRAG with automatic processing" \
+              --description "S3 data source with metadata mapping for precise bill filtering" \
               --knowledge-base-id "$KB_ID" \
               --data-source-configuration '{
                 "type": "S3",
@@ -216,6 +216,38 @@ phases:
                   "fixedSizeChunkingConfiguration": {
                     "maxTokens": 2000,
                     "overlapPercentage": 10
+                  }
+                },
+                "metadataConfiguration": {
+                  "type": "RECORD_LEVEL",
+                  "s3MetadataConfiguration": {
+                    "metadataAttributes": [
+                      {
+                        "key": "x-amz-meta-bill_id",
+                        "type": "STRING",
+                        "name": "bill_id"
+                      },
+                      {
+                        "key": "x-amz-meta-congress",
+                        "type": "STRING",
+                        "name": "congress"
+                      },
+                      {
+                        "key": "x-amz-meta-bill_type",
+                        "type": "STRING",
+                        "name": "bill_type"
+                      },
+                      {
+                        "key": "x-amz-meta-bill_number",
+                        "type": "STRING",
+                        "name": "bill_number"
+                      },
+                      {
+                        "key": "x-amz-meta-entity_type",
+                        "type": "STRING",
+                        "name": "entity_type"
+                      }
+                    ]
                   }
                 },
                 "contextEnrichmentConfiguration": {
