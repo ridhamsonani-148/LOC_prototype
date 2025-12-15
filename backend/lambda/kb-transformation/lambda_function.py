@@ -25,34 +25,117 @@ def lambda_handler(event, context):
     Actual event structure from Knowledge Base:
     {
         "version": "1.0",
-        "bucketName": "congress-bills-data-541064517181-us-east-1",
+        "bucketName": "loc-transformation-541064517181-us-east-1",
         "knowledgeBaseId": "ULNF0JAYER",
-        "dataSourceId": "MM7S6XODMN", 
-        "ingestionJobId": "...",
-        "priorTask": "...",
-        "inputFiles": [...]
+        "dataSourceId": "F8RGOJVWHT",
+        "ingestionJobId": "WC4RZUYTQU",
+        "priorTask": "CHUNKING",
+        "inputFiles": [
+            {
+                "contentBatches": [
+                    {
+                        "key": "temp/aws/bedrock/.../extracted/congress_11/hr_39_1.JSON"
+                    }
+                ],
+                "originalFileLocation": {
+                    "type": "S3",
+                    "s3_location": {
+                        "uri": "s3://congress-bills-data-541064517181-us-east-1/extracted/congress_11/hr_39.txt"
+                    }
+                }
+            }
+        ]
     }
     """
     try:
         logger.info(f"Transformation event received")
-        logger.info(f"Event keys: {list(event.keys())}")
-        logger.info(f"Full event: {json.dumps(event, indent=2)}")
+        logger.info(f"Processing {len(event.get('inputFiles', []))} input files")
         
-        # The actual event structure is different - let's handle what we get
-        bucket_name = event.get('bucketName', '')
-        input_files = event.get('inputFiles', [])
+        # Get S3 client to read original file metadata and chunk content
+        s3_client = boto3.client('s3')
         
-        logger.info(f"Bucket: {bucket_name}")
-        logger.info(f"Input files: {len(input_files)}")
+        # Process each input file
+        for input_file in event.get('inputFiles', []):
+            # Get original file location to extract S3 metadata
+            original_location = input_file.get('originalFileLocation', {})
+            if original_location.get('type') == 'S3':
+                original_s3_uri = original_location.get('s3_location', {}).get('uri', '')
+                logger.info(f"Original file: {original_s3_uri}")
+                
+                # Parse S3 URI to get bucket and key
+                if original_s3_uri.startswith('s3://'):
+                    parts = original_s3_uri[5:].split('/', 1)
+                    if len(parts) == 2:
+                        source_bucket, source_key = parts
+                        
+                        # Get S3 metadata from original file
+                        try:
+                            response = s3_client.head_object(Bucket=source_bucket, Key=source_key)
+                            file_metadata = response.get('Metadata', {})
+                            
+                            # Extract bill information from S3 metadata
+                            bill_id = file_metadata.get('bill_id', 'unknown')
+                            congress = file_metadata.get('congress', 'unknown')
+                            bill_type = file_metadata.get('bill_type', 'unknown')
+                            bill_number = file_metadata.get('bill_number', 'unknown')
+                            title = file_metadata.get('title', 'N/A')
+                            introduced_date = file_metadata.get('introduced_date', 'N/A')
+                            latest_action = file_metadata.get('latest_action', 'N/A')
+                            latest_action_date = file_metadata.get('latest_action_date', 'N/A')
+                            
+                            logger.info(f"Extracted metadata - Bill ID: {bill_id}, Congress: {congress}, Type: {bill_type}, Number: {bill_number}")
+                            
+                            # Process each content batch (chunk)
+                            for batch in input_file.get('contentBatches', []):
+                                chunk_key = batch.get('key', '')
+                                if chunk_key:
+                                    # Read the chunk content from transformation bucket
+                                    try:
+                                        chunk_response = s3_client.get_object(
+                                            Bucket=event.get('bucketName', ''),
+                                            Key=chunk_key
+                                        )
+                                        chunk_content = json.loads(chunk_response['Body'].read().decode('utf-8'))
+                                        
+                                        # Add metadata to the chunk
+                                        if 'contentMetadata' not in chunk_content:
+                                            chunk_content['contentMetadata'] = {}
+                                        
+                                        # Add our structured metadata
+                                        chunk_content['contentMetadata'].update({
+                                            # Core identifiers for filtering
+                                            "bill_id": bill_id,
+                                            "congress": congress,
+                                            "bill_type": bill_type.upper(),
+                                            "bill_number": bill_number,
+                                            "entity_type": "bill",
+                                            
+                                            # Additional metadata for enriched responses
+                                            "title": title,
+                                            "introduced_date": introduced_date,
+                                            "latest_action": latest_action,
+                                            "latest_action_date": latest_action_date,
+                                        })
+                                        
+                                        # Write the updated chunk back to S3
+                                        s3_client.put_object(
+                                            Bucket=event.get('bucketName', ''),
+                                            Key=chunk_key,
+                                            Body=json.dumps(chunk_content),
+                                            ContentType='application/json'
+                                        )
+                                        
+                                        logger.info(f"Updated chunk {chunk_key} with metadata")
+                                        
+                                    except Exception as e:
+                                        logger.error(f"Error processing chunk {chunk_key}: {str(e)}")
+                                        
+                        except Exception as e:
+                            logger.error(f"Error reading original file metadata: {str(e)}")
         
-        # For now, return the event as-is since we need to understand the actual structure
-        # This will help us see what Knowledge Base is actually sending
-        logger.info("Returning event as-is for debugging")
-        
+        logger.info("Transformation completed successfully")
         return event
         
     except Exception as e:
         logger.error(f"Transformation error: {str(e)}", exc_info=True)
-        
-        # Return original event on error (fallback)
         return event
