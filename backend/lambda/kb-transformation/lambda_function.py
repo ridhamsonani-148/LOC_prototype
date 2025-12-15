@@ -153,21 +153,39 @@ def lambda_handler(event, context):
         
         logger.info("Transformation completed successfully")
         
-        # Return a clean response that Knowledge Base can deserialize
+        # Return the correct format as per AWS documentation
+        # Knowledge Base expects: {"outputFiles": [...]}
+        output_files = []
+        
+        for input_file in event.get('inputFiles', []):
+            output_file = {
+                "originalFileLocation": input_file.get("originalFileLocation", {}),
+                "fileMetadata": input_file.get("fileMetadata", {}),
+                "contentBatches": input_file.get("contentBatches", [])
+            }
+            output_files.append(output_file)
+        
         response = {
-            "version": event.get("version", "1.0"),
-            "bucketName": event.get("bucketName", ""),
-            "knowledgeBaseId": event.get("knowledgeBaseId", ""),
-            "dataSourceId": event.get("dataSourceId", ""),
-            "ingestionJobId": event.get("ingestionJobId", ""),
-            "priorTask": event.get("priorTask", ""),
-            "inputFiles": event.get("inputFiles", [])
+            "outputFiles": output_files
         }
         
-        logger.info(f"Returning clean response with {len(response.get('inputFiles', []))} input files")
+        logger.info(f"Returning correct format with {len(output_files)} output files")
         return response
         
     except Exception as e:
         logger.error(f"Transformation error: {str(e)}", exc_info=True)
-        logger.error(f"Returning original event due to error")
-        return event
+        logger.error(f"Returning original files due to error")
+        
+        # Return error response in correct format
+        output_files = []
+        for input_file in event.get('inputFiles', []):
+            output_file = {
+                "originalFileLocation": input_file.get("originalFileLocation", {}),
+                "fileMetadata": input_file.get("fileMetadata", {}),
+                "contentBatches": input_file.get("contentBatches", [])
+            }
+            output_files.append(output_file)
+        
+        return {
+            "outputFiles": output_files
+        }
