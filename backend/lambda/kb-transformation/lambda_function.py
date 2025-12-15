@@ -97,25 +97,43 @@ def lambda_handler(event, context):
                                         )
                                         chunk_content = json.loads(chunk_response['Body'].read().decode('utf-8'))
                                         
-                                        # Add metadata to the chunk
-                                        if 'contentMetadata' not in chunk_content:
-                                            chunk_content['contentMetadata'] = {}
-                                        
-                                        # Add our structured metadata
-                                        chunk_content['contentMetadata'].update({
-                                            # Core identifiers for filtering
-                                            "bill_id": bill_id,
-                                            "congress": congress,
-                                            "bill_type": bill_type.upper(),
-                                            "bill_number": bill_number,
-                                            "entity_type": "bill",
+                                        # Handle the actual JSON structure: {"fileContents": [{"contentBody": "...", "contentMetadata": {}}]}
+                                        if 'fileContents' in chunk_content:
+                                            for file_content in chunk_content['fileContents']:
+                                                if 'contentMetadata' not in file_content:
+                                                    file_content['contentMetadata'] = {}
+                                                
+                                                # Add our structured metadata to each file content
+                                                file_content['contentMetadata'].update({
+                                                    # Core identifiers for filtering
+                                                    "bill_id": bill_id,
+                                                    "congress": congress,
+                                                    "bill_type": bill_type.upper(),
+                                                    "bill_number": bill_number,
+                                                    "entity_type": "bill",
+                                                    
+                                                    # Additional metadata for enriched responses
+                                                    "title": title,
+                                                    "introduced_date": introduced_date,
+                                                    "latest_action": latest_action,
+                                                    "latest_action_date": latest_action_date,
+                                                })
+                                        else:
+                                            # Fallback: add metadata to root level if structure is different
+                                            if 'contentMetadata' not in chunk_content:
+                                                chunk_content['contentMetadata'] = {}
                                             
-                                            # Additional metadata for enriched responses
-                                            "title": title,
-                                            "introduced_date": introduced_date,
-                                            "latest_action": latest_action,
-                                            "latest_action_date": latest_action_date,
-                                        })
+                                            chunk_content['contentMetadata'].update({
+                                                "bill_id": bill_id,
+                                                "congress": congress,
+                                                "bill_type": bill_type.upper(),
+                                                "bill_number": bill_number,
+                                                "entity_type": "bill",
+                                                "title": title,
+                                                "introduced_date": introduced_date,
+                                                "latest_action": latest_action,
+                                                "latest_action_date": latest_action_date,
+                                            })
                                         
                                         # Write the updated chunk back to S3
                                         s3_client.put_object(

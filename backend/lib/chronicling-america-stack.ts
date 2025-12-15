@@ -419,6 +419,9 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     // Grant S3 read permissions to Lambda for direct bill lookup
     dataBucket.grantRead(lambdaRole);
+    
+    // Grant transformation lambda access to transformation bucket
+    transformationBucket.grantReadWrite(lambdaRole);
 
     // ========================================
     // Lambda Functions (Only 3 needed!)
