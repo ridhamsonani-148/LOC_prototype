@@ -196,11 +196,32 @@ phases:
           else
             echo "Creating new Data Source with Custom Transformation for GraphRAG..."
             
-            # Create Data Source with S3 metadata mapping for precise filtering
-            echo "Creating Data Source with S3 metadata mapping..."
+            # Create Data Source with Custom Transformation Lambda for precise filtering
+            echo "Creating Data Source with Custom Transformation Lambda..."
+            
+            # Build transformation configuration
+            if [ -n "$TRANSFORMATION_LAMBDA_ARN" ]; then
+              TRANSFORMATION_CONFIG='"customTransformationConfiguration": {
+                "transformations": [
+                  {
+                    "stepToApply": "POST_CHUNKING",
+                    "transformationFunction": {
+                      "transformationLambdaConfiguration": {
+                        "lambdaArn": "'"$TRANSFORMATION_LAMBDA_ARN"'"
+                      }
+                    }
+                  }
+                ]
+              },'
+              echo "✓ Using Custom Transformation Lambda: $TRANSFORMATION_LAMBDA_ARN"
+            else
+              TRANSFORMATION_CONFIG=""
+              echo "⚠ No transformation lambda - using basic configuration"
+            fi
+            
             DS_ID=$(aws bedrock-agent create-data-source \
               --name "${PROJECT_NAME}-s3-datasource" \
-              --description "S3 data source with metadata mapping for precise bill filtering" \
+              --description "S3 data source with custom transformation lambda for precise bill filtering" \
               --knowledge-base-id "$KB_ID" \
               --data-source-configuration '{
                 "type": "S3",
@@ -218,38 +239,7 @@ phases:
                     "overlapPercentage": 10
                   }
                 },
-                "metadataConfiguration": {
-                  "type": "RECORD_LEVEL",
-                  "s3MetadataConfiguration": {
-                    "metadataAttributes": [
-                      {
-                        "key": "x-amz-meta-bill_id",
-                        "type": "STRING",
-                        "name": "bill_id"
-                      },
-                      {
-                        "key": "x-amz-meta-congress",
-                        "type": "STRING",
-                        "name": "congress"
-                      },
-                      {
-                        "key": "x-amz-meta-bill_type",
-                        "type": "STRING",
-                        "name": "bill_type"
-                      },
-                      {
-                        "key": "x-amz-meta-bill_number",
-                        "type": "STRING",
-                        "name": "bill_number"
-                      },
-                      {
-                        "key": "x-amz-meta-entity_type",
-                        "type": "STRING",
-                        "name": "entity_type"
-                      }
-                    ]
-                  }
-                },
+                '"$TRANSFORMATION_CONFIG"'
                 "contextEnrichmentConfiguration": {
                   "type": "BEDROCK_FOUNDATION_MODEL",
                   "bedrockFoundationModelConfiguration": {

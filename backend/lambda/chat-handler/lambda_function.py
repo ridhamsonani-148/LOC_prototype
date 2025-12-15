@@ -463,6 +463,7 @@ Please provide a comprehensive answer based solely on the bill content above."""
 def query_knowledge_base_with_metadata(question: str, persona: str, bill_info: dict) -> dict:
     """
     Query Knowledge Base with proper metadata filtering (primary method)
+    Uses the transformation lambda metadata for precise bill filtering
     """
     print(f"Querying Knowledge Base with metadata filtering: {KNOWLEDGE_BASE_ID}")
     
@@ -473,7 +474,6 @@ def query_knowledge_base_with_metadata(question: str, persona: str, bill_info: d
     
     # Build metadata filter and enhanced query
     metadata_filter = build_metadata_filter(bill_info)
-    enhanced_query = build_enhanced_query(question, bill_info)
     
     try:
         # Determine model ARN
@@ -500,7 +500,7 @@ def query_knowledge_base_with_metadata(question: str, persona: str, bill_info: d
         if metadata_filter:
             retrieval_config['vectorSearchConfiguration']['filter'] = metadata_filter
             print(f"Applied metadata filter: {json.dumps(metadata_filter, indent=2)}")
-            print("This will retrieve ONLY chunks from the specified bill")
+            print("This will retrieve ONLY chunks from the specified bill using transformation lambda metadata")
         else:
             print("No specific bill detected - searching all documents")
         
@@ -537,11 +537,11 @@ Answer:"""
         }
         
         print(f"Knowledge Base ID: {KNOWLEDGE_BASE_ID}")
-        print(f"Using enhanced query: {enhanced_query}")
+        print(f"Using original query (metadata filter handles precision): {question}")
         
         response = bedrock_agent_runtime.retrieve_and_generate(
             input={
-                'text': enhanced_query
+                'text': question  # Use original question since metadata filter provides precision
             },
             retrieveAndGenerateConfiguration=retrieve_and_generate_config
         )
@@ -569,6 +569,17 @@ Answer:"""
             entities = response['metadata'].get('entities', [])
         
         print(f"KB returned {len(sources)} sources from {len(set(s['document_id'] for s in sources))} unique documents")
+        
+        # Check if we got results with metadata filtering
+        has_citations = 'citations' in response and len(response['citations']) > 0
+        
+        if not has_citations and metadata_filter:
+            print("WARNING: Metadata filtering returned no results - bill may not exist or metadata not properly set")
+            return {
+                'answer': f"I couldn't find the specific bill you're asking about. Please check if Congress {bill_info.get('congress', 'N/A')} {bill_info.get('bill_type', 'N/A')} {bill_info.get('bill_number', 'N/A')} exists in the database.",
+                'sources': [],
+                'entities': []
+            }
         
         return {
             'answer': answer,

@@ -1,135 +1,116 @@
 """
 Knowledge Base Custom Transformation Lambda
-Transforms bill documents into structured format for GraphRAG
+Transforms bill documents and adds metadata to each chunk for precise filtering
 
-This Lambda runs BEFORE chunking and creates the proper graph structure:
-Congress → Congress_N → Bills → Metadata + Text
+This Lambda runs DURING chunking and adds structured metadata to each chunk:
+- Extracts bill metadata from S3 object metadata
+- Attaches metadata to every chunk for exact filtering
+- Enables precise bill retrieval using metadata filters
 
-Input: Raw document from S3
-Output: Structured document with entity markers for graph creation
+Input: Document chunks from Knowledge Base
+Output: Chunks with structured metadata attached
 """
 
 import json
 import logging
+import boto3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def lambda_handler(event, context):
     """
-    Transform documents for Knowledge Base GraphRAG
+    Transform document chunks and add structured metadata
     
     Event structure from Knowledge Base:
     {
-        "s3Uri": "s3://bucket/key",
-        "s3Bucket": "bucket-name",
-        "s3ObjectKey": "extracted/congress_6/hr_1.json",
-        "metadata": {...}
+        "fileMetadata": {
+            "x-amz-meta-bill_id": "congress_16_hr_113",
+            "x-amz-meta-congress": "16", 
+            "x-amz-meta-bill_type": "HR",
+            "x-amz-meta-bill_number": "113",
+            "x-amz-meta-title": "A Bill To regulate...",
+            "x-amz-meta-introduced_date": "1820-03-22",
+            "x-amz-meta-latest_action": "Read twice...",
+            "x-amz-meta-latest_action_date": "1820-03-22"
+        },
+        "contentBatches": [
+            {
+                "contentBody": "BILL METADATA: Congress: 16...",
+                "contentType": "TEXT"
+            }
+        ]
     }
     """
     try:
-        logger.info(f"Transformation event: {json.dumps(event)}")
+        logger.info(f"Transformation event received")
+        logger.info(f"Event keys: {list(event.keys())}")
         
-        # Extract S3 metadata
-        s3_object_key = event.get('s3ObjectKey', '')
-        metadata = event.get('metadata', {})
+        # Extract file metadata from S3 object
+        file_metadata = event.get('fileMetadata', {})
+        content_batches = event.get('contentBatches', [])
         
-        # Parse the document content (already in JSON format from collector)
-        document_content = event.get('content', {})
+        logger.info(f"File metadata keys: {list(file_metadata.keys())}")
+        logger.info(f"Number of content batches: {len(content_batches)}")
         
-        # If content is string, parse it
-        if isinstance(document_content, str):
-            try:
-                document_content = json.loads(document_content)
-            except:
-                # If not JSON, treat as plain text
-                document_content = {"bill_text": document_content}
+        # Extract bill information from S3 metadata
+        bill_id = file_metadata.get('x-amz-meta-bill_id', 'unknown')
+        congress = file_metadata.get('x-amz-meta-congress', 'unknown')
+        bill_type = file_metadata.get('x-amz-meta-bill_type', 'unknown') 
+        bill_number = file_metadata.get('x-amz-meta-bill_number', 'unknown')
+        title = file_metadata.get('x-amz-meta-title', 'N/A')
+        introduced_date = file_metadata.get('x-amz-meta-introduced_date', 'N/A')
+        latest_action = file_metadata.get('x-amz-meta-latest_action', 'N/A')
+        latest_action_date = file_metadata.get('x-amz-meta-latest_action_date', 'N/A')
         
-        # Extract structured data
-        entity_type = document_content.get('entity_type', 'bill')
-        congress_number = document_content.get('congress_number', metadata.get('congress', 'unknown'))
-        bill_type = document_content.get('bill_type', metadata.get('bill_type', 'unknown'))
-        bill_number = document_content.get('bill_number', metadata.get('bill_number', 'unknown'))
-        bill_id = document_content.get('bill_id', f"congress_{congress_number}_{bill_type}_{bill_number}")
-        parent_congress_id = document_content.get('parent_congress_id', f"congress_{congress_number}")
+        logger.info(f"Extracted metadata - Bill ID: {bill_id}, Congress: {congress}, Type: {bill_type}, Number: {bill_number}")
         
-        # Create transformed document with explicit entity markers
-        # This structure tells Knowledge Base how to build the graph
-        transformed_doc = {
-            # Entity markers for graph node creation
-            "entities": [
-                {
-                    "type": "Congress",
-                    "id": parent_congress_id,
-                    "properties": {
-                        "congress_number": congress_number,
-                        "name": f"Congress {congress_number}"
-                    }
-                },
-                {
-                    "type": "Bill",
-                    "id": bill_id,
-                    "properties": {
-                        "bill_type": bill_type,
-                        "bill_number": bill_number,
-                        "congress": congress_number,
-                        "title": document_content.get('title', 'N/A'),
-                        "introduced_date": document_content.get('introduced_date', 'N/A'),
-                        "latest_action": document_content.get('latest_action', 'N/A'),
-                        "latest_action_date": document_content.get('latest_action_date', 'N/A')
-                    }
-                }
-            ],
-            # Relationships for graph edges
-            "relationships": [
-                {
-                    "source": bill_id,
-                    "target": parent_congress_id,
-                    "type": "BELONGS_TO",
-                    "properties": {
-                        "relationship": "bill_to_congress"
-                    }
-                }
-            ],
-            # Document content for semantic search
-            "document": {
-                "id": bill_id,
-                "type": entity_type,
-                "congress": congress_number,
-                "bill_type": bill_type,
-                "bill_number": bill_number,
-                "title": document_content.get('title', 'N/A'),
-                "metadata": {
-                    "congress_number": congress_number,
-                    "bill_type": bill_type,
+        # Transform each content batch by adding structured metadata
+        transformed_batches = []
+        
+        for i, batch in enumerate(content_batches):
+            content_body = batch.get('contentBody', '')
+            content_type = batch.get('contentType', 'TEXT')
+            
+            # Create transformed batch with metadata
+            transformed_batch = {
+                "contentBody": content_body,
+                "contentType": content_type,
+                "contentMetadata": {
+                    # Core identifiers for filtering
+                    "bill_id": bill_id,
+                    "congress": congress,
+                    "bill_type": bill_type.upper(),  # Normalize to uppercase
                     "bill_number": bill_number,
-                    "introduced_date": document_content.get('introduced_date', 'N/A'),
-                    "latest_action": document_content.get('latest_action', 'N/A')
-                },
-                "text": document_content.get('bill_text', '')
+                    "entity_type": "bill",
+                    
+                    # Additional metadata for enriched responses
+                    "title": title,
+                    "introduced_date": introduced_date,
+                    "latest_action": latest_action,
+                    "latest_action_date": latest_action_date,
+                    
+                    # Chunk information
+                    "chunk_index": i,
+                    "total_chunks": len(content_batches)
+                }
             }
-        }
+            
+            transformed_batches.append(transformed_batch)
+            
+        logger.info(f"Successfully transformed {len(transformed_batches)} content batches for bill {bill_id}")
         
-        # Return transformed document
-        # Knowledge Base will use this to create:
-        # - Congress nodes
-        # - Bill nodes
-        # - BELONGS_TO edges
-        # - Searchable chunks from bill_text
-        
-        logger.info(f"Transformed document for bill: {bill_id}")
-        logger.info(f"Created entities: Congress ({parent_congress_id}), Bill ({bill_id})")
-        
+        # Return transformed batches
+        # Knowledge Base will store each chunk with its metadata
+        # This enables precise filtering like: congress=16 AND bill_type=HR AND bill_number=113
         return {
-            'statusCode': 200,
-            'transformedDocument': transformed_doc
+            'contentBatches': transformed_batches
         }
         
     except Exception as e:
         logger.error(f"Transformation error: {str(e)}", exc_info=True)
         
-        # Return original document on error (fallback)
+        # Return original batches on error (fallback)
         return {
-            'statusCode': 200,
-            'transformedDocument': event.get('content', {})
+            'contentBatches': event.get('contentBatches', [])
         }

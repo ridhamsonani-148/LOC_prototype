@@ -368,7 +368,7 @@ class DataCollector:
             return None
     
     def save_bill_to_s3(self, congress_num, bill_type, bill_number, text_content, metadata):
-        """Save extracted bill text to S3 as TXT file with metadata"""
+        """Save extracted bill text to S3 as TXT file with metadata for transformation lambda"""
         try:
             # Create structured text document with metadata header
             header = f"""BILL METADATA:
@@ -393,28 +393,39 @@ BILL TEXT:
                 self.log(f"  ✗ File too large: {size_mb:.2f}MB (KB limit is 50MB)")
                 return False
             
-            # Save to S3 as TXT file with rich metadata
+            # Prepare metadata for transformation lambda
+            # These will be available as x-amz-meta-* in the transformation lambda
+            latest_action = metadata.get('latestAction', {})
+            s3_metadata = {
+                # Core identifiers (required by transformation lambda)
+                'bill_id': f"congress_{congress_num}_{bill_type}_{bill_number}",
+                'congress': str(congress_num),
+                'bill_type': bill_type.upper(),
+                'bill_number': str(bill_number),
+                
+                # Additional metadata for enriched responses
+                'title': (metadata.get('title', '') or 'N/A')[:1024],  # S3 metadata limit
+                'introduced_date': (metadata.get('introducedDate', '') or 'N/A')[:100],
+                'latest_action': (latest_action.get('text', '') or 'N/A')[:1024],
+                'latest_action_date': (latest_action.get('actionDate', '') or 'N/A')[:100],
+                
+                # Source information
+                'source': 'congress.gov',
+                'entity_type': 'bill',
+            }
+            
+            # Save to S3 as TXT file with metadata for transformation lambda
             key = f"extracted/congress_{congress_num}/{bill_type}_{bill_number}.txt"
             s3.put_object(
                 Bucket=BUCKET_NAME,
                 Key=key,
                 Body=content_bytes,
                 ContentType='text/plain',
-                Metadata={
-                    # S3 metadata for filtering and organization
-                    'source': 'congress.gov',
-                    'entity_type': 'bill',
-                    'congress': str(congress_num),
-                    'parent_congress_id': f"congress_{congress_num}",
-                    'bill_type': bill_type.upper(),
-                    'bill_number': str(bill_number),
-                    'bill_id': f"congress_{congress_num}_{bill_type}_{bill_number}",
-                    'title': metadata.get('title', '')[:1024],
-                    'introduced_date': metadata.get('introducedDate', '')[:100],
-                }
+                Metadata=s3_metadata
             )
             
             self.log(f"  ✓ Saved to S3: {key} ({size_mb:.2f}MB)")
+            self.log(f"  ✓ Added metadata for transformation lambda: bill_id={s3_metadata['bill_id']}")
             return True
             
         except Exception as e:
