@@ -202,6 +202,11 @@ phases:
             # Build transformation configuration
             if [ -n "$TRANSFORMATION_LAMBDA_ARN" ]; then
               TRANSFORMATION_CONFIG='"customTransformationConfiguration": {
+                "intermediateStorage": {
+                  "s3Location": {
+                    "uri": "s3://'"$DATA_BUCKET"'/transformation-temp/"
+                  }
+                },
                 "transformations": [
                   {
                     "stepToApply": "POST_CHUNKING",
@@ -214,6 +219,7 @@ phases:
                 ]
               },'
               echo "✓ Using Custom Transformation Lambda: $TRANSFORMATION_LAMBDA_ARN"
+              echo "✓ Intermediate storage: s3://$DATA_BUCKET/transformation-temp/"
             else
               TRANSFORMATION_CONFIG=""
               echo "⚠ No transformation lambda - using basic configuration"
@@ -227,8 +233,7 @@ phases:
                 "type": "S3",
                 "s3Configuration": {
                   "bucketArn": "'"$BUCKET_ARN"'",
-                  "inclusionPrefixes": ["extracted/"],
-                  "inclusionPatterns": ["**/*.txt"]
+                  "inclusionPrefixes": ["extracted/"]
                 }
               }' \
               --vector-ingestion-configuration '{
