@@ -41,7 +41,7 @@ phases:
           
           echo "Extracting outputs..."
           DATA_BUCKET=$(cat outputs.json | jq -r '.LOCstack.DataBucketName // empty')
-
+          TRANSFORMATION_BUCKET=$(cat outputs.json | jq -r '.LOCstack.TransformationBucketName // empty')
           KB_ROLE_ARN=$(cat outputs.json | jq -r '.LOCstack.KnowledgeBaseRoleArn // empty')
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
@@ -200,11 +200,11 @@ phases:
             echo "Creating Data Source with Custom Transformation Lambda..."
             
             # Build transformation configuration
-            if [ -n "$TRANSFORMATION_LAMBDA_ARN" ]; then
+            if [ -n "$TRANSFORMATION_LAMBDA_ARN" ] && [ -n "$TRANSFORMATION_BUCKET" ]; then
               TRANSFORMATION_CONFIG='"customTransformationConfiguration": {
                 "intermediateStorage": {
                   "s3Location": {
-                    "uri": "s3://'"$DATA_BUCKET"'/transformation-temp/"
+                    "uri": "s3://'"$TRANSFORMATION_BUCKET"'/temp/"
                   }
                 },
                 "transformations": [
@@ -219,10 +219,10 @@ phases:
                 ]
               },'
               echo "✓ Using Custom Transformation Lambda: $TRANSFORMATION_LAMBDA_ARN"
-              echo "✓ Intermediate storage: s3://$DATA_BUCKET/transformation-temp/"
+              echo "✓ Intermediate storage: s3://$TRANSFORMATION_BUCKET/temp/"
             else
               TRANSFORMATION_CONFIG=""
-              echo "⚠ No transformation lambda - using basic configuration"
+              echo "⚠ No transformation lambda or transformation bucket - using basic configuration"
             fi
             
             DS_ID=$(aws bedrock-agent create-data-source \
@@ -344,12 +344,18 @@ phases:
             exit 1
           fi
           
+          if [ -z "$TRANSFORMATION_BUCKET" ]; then
+            echo "❌ ERROR: Could not extract Transformation Bucket from CDK deployment"
+            exit 1
+          fi
+          
           echo "✅ Deployment successful!"
           echo ""
           echo "========================================="
           echo "Deployment Summary"
           echo "========================================="
           echo "Data Bucket: $DATA_BUCKET"
+          echo "Transformation Bucket: $TRANSFORMATION_BUCKET"
           echo "Graph ID: $GRAPH_ID"
           echo "Knowledge Base ID: $KB_ID"
           echo "Data Source ID: $DS_ID"
