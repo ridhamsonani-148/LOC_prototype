@@ -266,6 +266,15 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       })
     );
 
+    // Grant Lambda invoke permission to Knowledge Base role (for transformation lambda)
+    knowledgeBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["lambda:InvokeFunction"],
+        resources: [`arn:aws:lambda:${this.region}:${this.account}:function:${projectName}-kb-transformation`],
+      })
+    );
+
     // ========================================
     // Knowledge Base will be created via CLI in buildspec.yml
     // ========================================
