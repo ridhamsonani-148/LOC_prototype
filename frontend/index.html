@@ -467,6 +467,27 @@
                 if (data.answer) {
                     addMessage(data.answer, 'assistant');
                     
+                    // Show sources/citations if available
+                    if (data.sources && data.sources.length > 0) {
+                        let sourcesHtml = '<div style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; border-left: 3px solid #667eea;"><strong>📚 Sources:</strong><ul style="margin: 5px 0 0 20px;">';
+                        data.sources.forEach((source, index) => {
+                            const fileName = source.document_id ? source.document_id.split('/').pop() : `Source ${index + 1}`;
+                            const preview = source.content ? source.content.substring(0, 100) + '...' : 'No preview available';
+                            const score = source.score ? ` (Score: ${(source.score * 100).toFixed(1)}%)` : '';
+                            sourcesHtml += `<li style="margin: 5px 0;"><strong>${fileName}</strong>${score}<br><small style="color: #6c757d;">${preview}</small></li>`;
+                        });
+                        sourcesHtml += '</ul></div>';
+                        addMessage(sourcesHtml, 'assistant');
+                    }
+                    
+                    // Show entities if available
+                    if (data.entities && data.entities.length > 0) {
+                        let entitiesHtml = '<div style="margin-top: 10px; padding: 10px; background: #e8f5e8; border-radius: 8px; border-left: 3px solid #28a745;"><strong>🏷️ Entities:</strong> ';
+                        entitiesHtml += data.entities.map(entity => `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; margin: 2px;">${entity}</span>`).join(' ');
+                        entitiesHtml += '</div>';
+                        addMessage(entitiesHtml, 'assistant');
+                    }
+                    
                     // Show additional info if available
                     if (data.result_count !== undefined) {
                         addMessage(`<small>Found ${data.result_count} results</small>`, 'system');

@@ -573,8 +573,16 @@ Answer:"""
         # Check if we got results with metadata filtering
         has_citations = 'citations' in response and len(response['citations']) > 0
         
-        if not has_citations and metadata_filter:
-            print("WARNING: Metadata filtering returned no results - bill may not exist or metadata not properly set")
+        if has_citations:
+            print(f"✓ Knowledge Base found {len(response['citations'])} citations with metadata filtering")
+            # Use the KB response even if sources is empty - the answer is still valid
+            return {
+                'answer': answer,
+                'sources': sources,
+                'entities': entities
+            }
+        elif metadata_filter:
+            print("WARNING: Metadata filtering returned no citations - bill may not exist or metadata not properly set")
             return {
                 'answer': f"I couldn't find the specific bill you're asking about. Please check if Congress {bill_info.get('congress', 'N/A')} {bill_info.get('bill_type', 'N/A')} {bill_info.get('bill_number', 'N/A')} exists in the database.",
                 'sources': [],
