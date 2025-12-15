@@ -49,7 +49,7 @@ export class ChroniclingAmericaStack extends cdk.Stack {
 
     // Transformation bucket for Knowledge Base intermediate storage
     const transformationBucket = new s3.Bucket(this, "TransformationBucket", {
-      bucketName: `${projectName}-transformation-${this.account}-${this.region}`,
+      bucketName: `loc-transformation-${this.account}-${this.region}`,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy: cdk.RemovalPolicy.DESTROY, // Can be destroyed since it's just temp storage
