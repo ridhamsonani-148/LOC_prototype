@@ -553,15 +553,37 @@ Answer:"""
         sources = []
         if 'citations' in response:
             print(f"Number of citations: {len(response['citations'])}")
-            for citation in response['citations']:
+            for i, citation in enumerate(response['citations']):
                 retrieved_refs = citation.get('retrievedReferences', [])
                 print(f"Citation has {len(retrieved_refs)} retrieved references")
-                for reference in retrieved_refs:
-                    sources.append({
-                        'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
-                        'content': reference.get('content', {}).get('text', '')[:200] + '...',
-                        'score': reference.get('score', 0)
-                    })
+                
+                if retrieved_refs:
+                    # Standard case: citations with retrieved references
+                    for reference in retrieved_refs:
+                        sources.append({
+                            'document_id': reference.get('location', {}).get('s3Location', {}).get('uri', ''),
+                            'content': reference.get('content', {}).get('text', '')[:200] + '...',
+                            'score': reference.get('score', 0)
+                        })
+                else:
+                    # Special case: citation exists but no retrieved references
+                    # This happens with metadata filtering - create a synthetic source
+                    if bill_info:
+                        bill_file = f"congress_{bill_info.get('congress', 'unknown')}_{bill_info.get('bill_type', 'unknown').lower()}_{bill_info.get('bill_number', 'unknown')}.txt"
+                        sources.append({
+                            'document_id': f"extracted/{bill_file}",
+                            'content': f"Bill {bill_info.get('bill_type', '')} {bill_info.get('bill_number', '')} from Congress {bill_info.get('congress', '')} (Found via metadata filtering)",
+                            'score': 1.0,
+                            'metadata_filtered': True
+                        })
+                    else:
+                        # Generic citation without bill info
+                        sources.append({
+                            'document_id': f"Citation {i+1}",
+                            'content': "Content found via Knowledge Base search",
+                            'score': 1.0,
+                            'metadata_filtered': True
+                        })
         
         # Extract entities
         entities = []
