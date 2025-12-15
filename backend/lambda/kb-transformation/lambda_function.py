@@ -152,8 +152,22 @@ def lambda_handler(event, context):
                             logger.error(f"Error reading original file metadata: {str(e)}")
         
         logger.info("Transformation completed successfully")
-        return event
+        
+        # Return a clean response that Knowledge Base can deserialize
+        response = {
+            "version": event.get("version", "1.0"),
+            "bucketName": event.get("bucketName", ""),
+            "knowledgeBaseId": event.get("knowledgeBaseId", ""),
+            "dataSourceId": event.get("dataSourceId", ""),
+            "ingestionJobId": event.get("ingestionJobId", ""),
+            "priorTask": event.get("priorTask", ""),
+            "inputFiles": event.get("inputFiles", [])
+        }
+        
+        logger.info(f"Returning clean response with {len(response.get('inputFiles', []))} input files")
+        return response
         
     except Exception as e:
         logger.error(f"Transformation error: {str(e)}", exc_info=True)
+        logger.error(f"Returning original event due to error")
         return event
