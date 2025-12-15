@@ -492,7 +492,7 @@ def query_knowledge_base_with_metadata(question: str, persona: str, bill_info: d
         retrieval_config = {
             'vectorSearchConfiguration': {
                 'numberOfResults': 100,  # High number to get all chunks from the bill
-                'overrideSearchType': 'HYBRID'  # Hybrid search for better accuracy
+                'overrideSearchType': 'SEMANTIC'  # Use SEMANTIC since HYBRID not supported
             }
         }
         
