@@ -181,8 +181,33 @@ phases:
             echo "✓ Found Transformation Lambda: $TRANSFORMATION_LAMBDA_ARN"
           fi
           
-          # Step 5: Create or Get Data Source with Custom Transformation
-          echo "Step 5: Checking for existing Data Source..."
+          # Step 5: Update Knowledge Base Role Permissions for Lambda
+          echo "Step 5: Updating Knowledge Base role permissions for Lambda invoke..."
+          KB_ROLE_NAME=$(echo "$KB_ROLE_ARN" | sed 's/.*role\///')
+          
+          echo "Adding Lambda invoke permissions to Knowledge Base role: $KB_ROLE_NAME"
+          aws iam put-role-policy \
+            --role-name "$KB_ROLE_NAME" \
+            --policy-name LambdaInvokeVersions \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": [
+                    "arn:aws:lambda:'"$CDK_DEFAULT_REGION"':'"$AWS_ACCOUNT_ID"':function:'"$PROJECT_NAME"'-kb-transformation",
+                    "arn:aws:lambda:'"$CDK_DEFAULT_REGION"':'"$AWS_ACCOUNT_ID"':function:'"$PROJECT_NAME"'-kb-transformation:$LATEST",
+                    "arn:aws:lambda:'"$CDK_DEFAULT_REGION"':'"$AWS_ACCOUNT_ID"':function:'"$PROJECT_NAME"'-kb-transformation:*"
+                  ]
+                }
+              ]
+            }' 2>/dev/null || echo "⚠ Failed to update role policy (may already exist)"
+          
+          echo "✓ Knowledge Base role permissions updated"
+          
+          # Step 6: Create or Get Data Source with Custom Transformation
+          echo "Step 6: Checking for existing Data Source..."
           BUCKET_ARN="arn:aws:s3:::${DATA_BUCKET}"
           
           DS_ID=$(aws bedrock-agent list-data-sources \
@@ -266,8 +291,8 @@ phases:
             echo "✓ Data Source created: $DS_ID"
           fi
           
-          # Step 6: Update Lambda environment variables
-          echo "Step 6: Updating Lambda environment variables..."
+          # Step 7: Update Lambda environment variables
+          echo "Step 7: Updating Lambda environment variables..."
           
           # Get current fargate-trigger Lambda config to preserve existing values
           FARGATE_ENV=$(aws lambda get-function-configuration \

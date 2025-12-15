@@ -22,95 +22,37 @@ def lambda_handler(event, context):
     """
     Transform document chunks and add structured metadata
     
-    Event structure from Knowledge Base:
+    Actual event structure from Knowledge Base:
     {
-        "fileMetadata": {
-            "x-amz-meta-bill_id": "congress_16_hr_113",
-            "x-amz-meta-congress": "16", 
-            "x-amz-meta-bill_type": "HR",
-            "x-amz-meta-bill_number": "113",
-            "x-amz-meta-title": "A Bill To regulate...",
-            "x-amz-meta-introduced_date": "1820-03-22",
-            "x-amz-meta-latest_action": "Read twice...",
-            "x-amz-meta-latest_action_date": "1820-03-22"
-        },
-        "contentBatches": [
-            {
-                "contentBody": "BILL METADATA: Congress: 16...",
-                "contentType": "TEXT"
-            }
-        ]
+        "version": "1.0",
+        "bucketName": "congress-bills-data-541064517181-us-east-1",
+        "knowledgeBaseId": "ULNF0JAYER",
+        "dataSourceId": "MM7S6XODMN", 
+        "ingestionJobId": "...",
+        "priorTask": "...",
+        "inputFiles": [...]
     }
     """
     try:
         logger.info(f"Transformation event received")
         logger.info(f"Event keys: {list(event.keys())}")
+        logger.info(f"Full event: {json.dumps(event, indent=2)}")
         
-        # Extract file metadata from S3 object
-        file_metadata = event.get('fileMetadata', {})
-        content_batches = event.get('contentBatches', [])
+        # The actual event structure is different - let's handle what we get
+        bucket_name = event.get('bucketName', '')
+        input_files = event.get('inputFiles', [])
         
-        logger.info(f"File metadata keys: {list(file_metadata.keys())}")
-        logger.info(f"Number of content batches: {len(content_batches)}")
+        logger.info(f"Bucket: {bucket_name}")
+        logger.info(f"Input files: {len(input_files)}")
         
-        # Extract bill information from S3 metadata
-        bill_id = file_metadata.get('x-amz-meta-bill_id', 'unknown')
-        congress = file_metadata.get('x-amz-meta-congress', 'unknown')
-        bill_type = file_metadata.get('x-amz-meta-bill_type', 'unknown') 
-        bill_number = file_metadata.get('x-amz-meta-bill_number', 'unknown')
-        title = file_metadata.get('x-amz-meta-title', 'N/A')
-        introduced_date = file_metadata.get('x-amz-meta-introduced_date', 'N/A')
-        latest_action = file_metadata.get('x-amz-meta-latest_action', 'N/A')
-        latest_action_date = file_metadata.get('x-amz-meta-latest_action_date', 'N/A')
+        # For now, return the event as-is since we need to understand the actual structure
+        # This will help us see what Knowledge Base is actually sending
+        logger.info("Returning event as-is for debugging")
         
-        logger.info(f"Extracted metadata - Bill ID: {bill_id}, Congress: {congress}, Type: {bill_type}, Number: {bill_number}")
-        
-        # Transform each content batch by adding structured metadata
-        transformed_batches = []
-        
-        for i, batch in enumerate(content_batches):
-            content_body = batch.get('contentBody', '')
-            content_type = batch.get('contentType', 'TEXT')
-            
-            # Create transformed batch with metadata
-            transformed_batch = {
-                "contentBody": content_body,
-                "contentType": content_type,
-                "contentMetadata": {
-                    # Core identifiers for filtering
-                    "bill_id": bill_id,
-                    "congress": congress,
-                    "bill_type": bill_type.upper(),  # Normalize to uppercase
-                    "bill_number": bill_number,
-                    "entity_type": "bill",
-                    
-                    # Additional metadata for enriched responses
-                    "title": title,
-                    "introduced_date": introduced_date,
-                    "latest_action": latest_action,
-                    "latest_action_date": latest_action_date,
-                    
-                    # Chunk information
-                    "chunk_index": i,
-                    "total_chunks": len(content_batches)
-                }
-            }
-            
-            transformed_batches.append(transformed_batch)
-            
-        logger.info(f"Successfully transformed {len(transformed_batches)} content batches for bill {bill_id}")
-        
-        # Return transformed batches
-        # Knowledge Base will store each chunk with its metadata
-        # This enables precise filtering like: congress=16 AND bill_type=HR AND bill_number=113
-        return {
-            'contentBatches': transformed_batches
-        }
+        return event
         
     except Exception as e:
         logger.error(f"Transformation error: {str(e)}", exc_info=True)
         
-        # Return original batches on error (fallback)
-        return {
-            'contentBatches': event.get('contentBatches', [])
-        }
+        # Return original event on error (fallback)
+        return event
