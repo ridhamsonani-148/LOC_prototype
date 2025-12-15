@@ -531,6 +531,13 @@ export class ChroniclingAmericaStack extends cdk.Stack {
       new iam.ServicePrincipal("bedrock.amazonaws.com")
     );
 
+    // Additional permission for Knowledge Base to invoke Lambda with specific conditions
+    kbTransformationFunction.addPermission("BedrockKnowledgeBaseInvoke", {
+      principal: new iam.ServicePrincipal("bedrock.amazonaws.com"),
+      action: "lambda:InvokeFunction",
+      sourceAccount: this.account,
+    });
+
     // 4. Chat Handler Lambda
     const chatHandlerLogGroup = new logs.LogGroup(this, "ChatHandlerLogGroup", {
       logGroupName: `/aws/lambda/${projectName}-chat-handler`,
