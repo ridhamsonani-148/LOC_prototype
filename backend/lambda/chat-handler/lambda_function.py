@@ -346,9 +346,9 @@ def query_knowledge_base_hybrid(question: str, persona: str = 'general') -> dict
     print("Stage 1: Using Knowledge Base with metadata filtering")
     kb_result = query_knowledge_base_with_metadata(question, persona, bill_info)
     
-    # Check if KB returned good results
-    if kb_result and kb_result.get('sources') and len(kb_result['sources']) > 0:
-        print("✓ Knowledge Base returned results with sources")
+    # Check if KB returned good results (answer is valid even without sources)
+    if kb_result and kb_result.get('answer') and not kb_result.get('error'):
+        print("✓ Knowledge Base returned valid answer")
         return kb_result
     
     # Stage 2: Direct S3 lookup (FALLBACK)
